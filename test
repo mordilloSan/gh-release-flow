@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+test_root=$(mktemp -d /tmp/gh-release-flow.XXXXXX)
+trap 'rm -rf -- "$test_root"' EXIT
+repo=$test_root/repo
+origin=$test_root/origin.git
+bin=$test_root/bin
+mkdir -p "$repo" "$bin"
+
+git -C "$repo" init -q
+git -C "$repo" config user.name Tester
+git -C "$repo" config user.email tester@example.com
+git -C "$repo" commit --allow-empty -qm 'chore: base'
+git -C "$repo" branch -M main
+git -C "$repo" tag v0.1.0
+git init --bare -q "$origin"
+git -C "$repo" remote add origin "$origin"
+git -C "$repo" push -qu origin main
+git -C "$repo" checkout -qb dev/v0.2.0
+git -C "$repo" commit --allow-empty -qm 'fix: preserve | pipe and \backslash'
+
+cat >"$bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+args=" $* "
+case "$1 $2" in
+    'pr list')
+        if [[ $args == *' --state merged '* && ${GH_MERGED:-0} == 1 ]]; then
+            echo 17
+        elif [[ $args == *' --state open '* && ${GH_MERGED:-0} != 1 && -f $GH_STATE ]]; then
+            echo 17
+        fi
+        ;;
+    'pr create')
+        while (($#)); do
+            [[ $1 != --body-file ]] || { shift; cp "$1" "$GH_BODY"; break; }
+            shift
+        done
+        : >"$GH_STATE"
+        ;;
+    'pr checks') echo 'no checks reported' ;;
+    'pr view')
+        if [[ $args == *' --json url '* ]]; then
+            echo 'https://github.com/owner/project/pull/17'
+        elif [[ $args == *' baseRefName,headRefName,headRefOid '* ]]; then
+            printf 'main\tdev/v0.2.0\t%s\n' "$(git rev-parse dev/v0.2.0)"
+        elif [[ $args == *' --json state '* ]]; then
+            echo MERGED
+        fi
+        ;;
+    'run list') printf '99\tcompleted\tsuccess\t2026-01-01T00:00:00Z\tdev/v0.2.0\tpull_request\tRelease v0.2.0\n' ;;
+    'run view') ;;
+    'release view') echo 'https://github.com/owner/project/releases/tag/v0.2.0' ;;
+    *) echo "unexpected gh invocation: $*" >&2; exit 1 ;;
+esac
+EOF
+cat >"$bin/sleep" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$bin/gh" "$bin/sleep"
+
+state=$test_root/gh-state
+body=$test_root/pr-body
+(
+    cd "$repo"
+    PATH="$bin:$PATH" GH_STATE=$state GH_BODY=$body \
+        "$script_dir/gh-release-flow" open-pr >/dev/null
+)
+[[ -s $body ]]
+grep -Fq '###  Bug Fixes' "$body"
+grep -Fq 'fix: preserve | pipe and \backslash' "$body"
+git -C "$repo" ls-remote --exit-code --heads origin refs/heads/dev/v0.2.0 >/dev/null
+
+git -C "$repo" checkout -q main
+git -C "$repo" merge -q --no-ff dev/v0.2.0 -m 'Merge release'
+git -C "$repo" push -q origin main
+git -C "$repo" checkout -q dev/v0.2.0
+(
+    cd "$repo"
+    PATH="$bin:$PATH" GH_STATE=$state GH_BODY=$body GH_MERGED=1 \
+        "$script_dir/gh-release-flow" merge >/dev/null
+)
+[[ $(git -C "$repo" branch --show-current) == main ]]
+! git -C "$repo" show-ref --verify --quiet refs/heads/dev/v0.2.0
+! git -C "$repo" ls-remote --exit-code --heads origin refs/heads/dev/v0.2.0 >/dev/null
+
+source "$script_dir/gh-release-flow"
+read_version V1.2.3
+[[ $VERSION == v1.2.3 && $REL_BRANCH == dev/v1.2.3 ]]
+echo 'tests passed'
