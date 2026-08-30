@@ -1,0 +1,26 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install check tools
+        run: |
+          go install mvdan.cc/sh/v3/cmd/shfmt@v3.14.0
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          printf '%s\n' "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Check syntax and style
+        run: shellcheck gh-release-flow test && shfmt -d gh-release-flow test && actionlint
+      - name: Test behavior
+        run: ./test
+
