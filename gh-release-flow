@@ -12,419 +12,434 @@ version_re='^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$'
 run_tsv_filter='.[0] | if . == null then empty else [(.databaseId|tostring), .status, (.conclusion // "n/a"), .createdAt, (.headBranch // "n/a"), (.event // "n/a"), (.displayTitle // .name)] | @tsv end'
 
 die() {
-    echo "ERROR: $*" >&2
-    exit 1
+	echo "ERROR: $*" >&2
+	exit 1
 }
 
 require_clean() {
-    git diff --quiet && git diff --cached --quiet ||
-        die 'Working tree not clean. Commit or stash changes first.'
+	if ! git diff --quiet || ! git diff --cached --quiet; then
+		die 'Working tree not clean. Commit or stash changes first.'
+	fi
 }
 
 require_gh() {
-    command -v gh >/dev/null 2>&1 ||
-        die 'GitHub CLI (gh) not found. Install it from https://cli.github.com/'
+	command -v gh >/dev/null 2>&1 ||
+		die 'GitHub CLI (gh) not found. Install it from https://cli.github.com/'
 }
 
 read_version() {
-    local candidate=${1:-${VERSION:-}}
-    if [[ -z $candidate ]]; then
-        read -r -p 'Enter version (e.g. v1.2.3): ' candidate
-    fi
-    VERSION=${candidate/#V/v}
-    [[ $VERSION =~ $version_re ]] ||
-        die "VERSION must look like v1.2.3 or v1.2.3-rc.1 (got '$VERSION')"
-    REL_BRANCH=dev/$VERSION
+	local candidate=${1:-${VERSION:-}}
+	if [[ -z $candidate ]]; then
+		read -r -p 'Enter version (e.g. v1.2.3): ' candidate
+	fi
+	VERSION=${candidate/#V/v}
+	[[ $VERSION =~ $version_re ]] ||
+		die "VERSION must look like v1.2.3 or v1.2.3-rc.1 (got '$VERSION')"
+	REL_BRANCH=dev/$VERSION
 }
 
 read_release_branch() {
-    BRANCH=$(git rev-parse --abbrev-ref HEAD)
-    [[ $BRANCH =~ ^dev/${version_re#^} ]] ||
-        die "Current branch '$BRANCH' is not a dev/v* release branch."
-    VERSION=${BRANCH#dev/}
+	BRANCH=$(git rev-parse --abbrev-ref HEAD)
+	[[ $BRANCH =~ ^dev/${version_re#^} ]] ||
+		die "Current branch '$BRANCH' is not a dev/v* release branch."
+	VERSION=${BRANCH#dev/}
 }
 
 generate_changelog() {
-    local version=$1 previous=$2 commit_range=$3 repo=$4
-    local features='' fixes='' docs='' style='' refactor='' perf=''
-    local tests='' build='' ci='' chore='' other=''
-    local message hash author entry
-    local -a log_args=(--reverse --no-merges --pretty=format:'%s%x00%h%x00%an%x00')
-    [[ -n $commit_range ]] && log_args+=("$commit_range")
+	local version=$1 previous=$2 commit_range=$3 repo=$4
+	local features='' fixes='' docs='' style='' refactor='' perf=''
+	local tests='' build='' ci='' chore='' other=''
+	local message hash author entry
+	local -a log_args=(--reverse --no-merges --pretty=format:'%s%x00%h%x00%an%x00')
+	[[ -n $commit_range ]] && log_args+=("$commit_range")
 
-    while IFS= read -r -d '' message \
-        && IFS= read -r -d '' hash \
-        && IFS= read -r -d '' author; do
-        message=${message#$'\n'}
-        [[ -n $message ]] || continue
-        [[ $author != 'github-actions[bot]' ]] || continue
-        [[ ! $message =~ ^[Cc]hangelog$ ]] || continue
+	while IFS= read -r -d '' message &&
+		IFS= read -r -d '' hash &&
+		IFS= read -r -d '' author; do
+		message=${message#$'\n'}
+		[[ -n $message ]] || continue
+		[[ $author != 'github-actions[bot]' ]] || continue
+		[[ ! $message =~ ^[Cc]hangelog$ ]] || continue
 
-        entry="* $message ([${hash:0:7}](https://github.com/$repo/commit/$hash)) by @$author"
-        if [[ $message =~ ^feat(\(.*\))?: ]]; then features+="$entry"$'\n'
-        elif [[ $message =~ ^fix(\(.*\))?: ]]; then fixes+="$entry"$'\n'
-        elif [[ $message =~ ^docs(\(.*\))?: ]]; then docs+="$entry"$'\n'
-        elif [[ $message =~ ^style(\(.*\))?: ]]; then style+="$entry"$'\n'
-        elif [[ $message =~ ^refactor(\(.*\))?: ]]; then refactor+="$entry"$'\n'
-        elif [[ $message =~ ^perf(\(.*\))?: ]]; then perf+="$entry"$'\n'
-        elif [[ $message =~ ^test(\(.*\))?: ]]; then tests+="$entry"$'\n'
-        elif [[ $message =~ ^build(\(.*\))?: ]]; then build+="$entry"$'\n'
-        elif [[ $message =~ ^ci(\(.*\))?: ]]; then ci+="$entry"$'\n'
-        elif [[ $message =~ ^chore(\(.*\))?: ]]; then chore+="$entry"$'\n'
-        else other+="$entry"$'\n'
-        fi
-    done < <(git log "${log_args[@]}")
+		entry="* $message ([${hash:0:7}](https://github.com/$repo/commit/$hash)) by @$author"
+		if [[ $message =~ ^feat(\(.*\))?: ]]; then
+			features+="$entry"$'\n'
+		elif [[ $message =~ ^fix(\(.*\))?: ]]; then
+			fixes+="$entry"$'\n'
+		elif [[ $message =~ ^docs(\(.*\))?: ]]; then
+			docs+="$entry"$'\n'
+		elif [[ $message =~ ^style(\(.*\))?: ]]; then
+			style+="$entry"$'\n'
+		elif [[ $message =~ ^refactor(\(.*\))?: ]]; then
+			refactor+="$entry"$'\n'
+		elif [[ $message =~ ^perf(\(.*\))?: ]]; then
+			perf+="$entry"$'\n'
+		elif [[ $message =~ ^test(\(.*\))?: ]]; then
+			tests+="$entry"$'\n'
+		elif [[ $message =~ ^build(\(.*\))?: ]]; then
+			build+="$entry"$'\n'
+		elif [[ $message =~ ^ci(\(.*\))?: ]]; then
+			ci+="$entry"$'\n'
+		elif [[ $message =~ ^chore(\(.*\))?: ]]; then
+			chore+="$entry"$'\n'
+		else
+			other+="$entry"$'\n'
+		fi
+	done < <(git log "${log_args[@]}")
 
-    [[ -z $features ]] || printf '###  Features\n\n%s\n' "$features"
-    [[ -z $fixes ]] || printf '###  Bug Fixes\n\n%s\n' "$fixes"
-    [[ -z $perf ]] || printf '###  Performance\n\n%s\n' "$perf"
-    [[ -z $refactor ]] || printf '###  Refactoring\n\n%s\n' "$refactor"
-    [[ -z $docs ]] || printf '###  Documentation\n\n%s\n' "$docs"
-    [[ -z $style ]] || printf '###  Style\n\n%s\n' "$style"
-    [[ -z $tests ]] || printf '###  Tests\n\n%s\n' "$tests"
-    [[ -z $build ]] || printf '###  Build\n\n%s\n' "$build"
-    [[ -z $ci ]] || printf '###  CI/CD\n\n%s\n' "$ci"
-    [[ -z $chore ]] || printf '###  Chores\n\n%s\n' "$chore"
-    [[ -z $other ]] || printf '###  Other Changes\n\n%s\n' "$other"
+	[[ -z $features ]] || printf '###  Features\n\n%s\n' "$features"
+	[[ -z $fixes ]] || printf '###  Bug Fixes\n\n%s\n' "$fixes"
+	[[ -z $perf ]] || printf '###  Performance\n\n%s\n' "$perf"
+	[[ -z $refactor ]] || printf '###  Refactoring\n\n%s\n' "$refactor"
+	[[ -z $docs ]] || printf '###  Documentation\n\n%s\n' "$docs"
+	[[ -z $style ]] || printf '###  Style\n\n%s\n' "$style"
+	[[ -z $tests ]] || printf '###  Tests\n\n%s\n' "$tests"
+	[[ -z $build ]] || printf '###  Build\n\n%s\n' "$build"
+	[[ -z $ci ]] || printf '###  CI/CD\n\n%s\n' "$ci"
+	[[ -z $chore ]] || printf '###  Chores\n\n%s\n' "$chore"
+	[[ -z $other ]] || printf '###  Other Changes\n\n%s\n' "$other"
 
-    printf '###  Contributors\n\n'
-    if [[ -n $commit_range ]]; then
-        git log --no-merges "$commit_range" --pretty=format:'* @%an' | sort -u
-    else
-        git log --no-merges --pretty=format:'* @%an' | sort -u
-    fi
-    if [[ -n $previous ]]; then
-        printf '\n\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
-            "$repo" "$previous" "$version"
-    else
-        printf '\n\n**Full Changelog**: https://github.com/%s/releases/tag/%s\n' \
-            "$repo" "$version"
-    fi
+	printf '###  Contributors\n\n'
+	if [[ -n $commit_range ]]; then
+		git log --no-merges "$commit_range" --pretty=format:'* @%an' | sort -u
+	else
+		git log --no-merges --pretty=format:'* @%an' | sort -u
+	fi
+	if [[ -n $previous ]]; then
+		printf '\n\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
+			"$repo" "$previous" "$version"
+	else
+		printf '\n\n**Full Changelog**: https://github.com/%s/releases/tag/%s\n' \
+			"$repo" "$version"
+	fi
 }
 
 generate_pr_body() {
-    local repo_name previous commit_range
-    repo_name=${REPO:-${GITHUB_REPOSITORY:-}}
-    if [[ -z $repo_name ]]; then
-        repo_name=$(git remote get-url origin 2>/dev/null |
-            sed -E 's#.*github\.com[:/]##; s#\.git$##')
-    fi
-    previous=$(git tag --list 'v*' --sort=-v:refname |
-        grep -v "^$VERSION$" | head -n1 || true)
-    commit_range=''
-    [[ -z $previous ]] || commit_range=$previous..HEAD
-    PR_BODY_FILE=$(mktemp)
-    {
-        echo "## $VERSION — $(date -u +%Y-%m-%d)"
-        echo
-        generate_changelog "$VERSION" "$previous" "$commit_range" "$repo_name"
-    } >"$PR_BODY_FILE"
+	local repo_name previous commit_range
+	repo_name=${REPO:-${GITHUB_REPOSITORY:-}}
+	if [[ -z $repo_name ]]; then
+		repo_name=$(git remote get-url origin 2>/dev/null |
+			sed -E 's#.*github\.com[:/]##; s#\.git$##')
+	fi
+	previous=$(git tag --list 'v*' --sort=-v:refname |
+		grep -v "^$VERSION$" | head -n1 || true)
+	commit_range=''
+	[[ -z $previous ]] || commit_range=$previous..HEAD
+	PR_BODY_FILE=$(mktemp)
+	{
+		echo "## $VERSION — $(date -u +%Y-%m-%d)"
+		echo
+		generate_changelog "$VERSION" "$previous" "$commit_range" "$repo_name"
+	} >"$PR_BODY_FILE"
 }
 
 start_dev() {
-    require_clean
-    require_gh
-    read_version "${1:-}"
-    git fetch origin
-    git checkout "$DEFAULT_BASE_BRANCH"
-    git pull --ff-only
-    if git show-ref --verify --quiet "refs/heads/$REL_BRANCH"; then
-        echo "==> Branch $REL_BRANCH already exists, checking it out…"
-        git checkout "$REL_BRANCH"
-    else
-        echo "==> Creating branch $REL_BRANCH from $DEFAULT_BASE_BRANCH…"
-        git checkout -b "$REL_BRANCH" "$DEFAULT_BASE_BRANCH"
-        git push -u origin "$REL_BRANCH"
-    fi
-    echo "OK: Ready on branch $REL_BRANCH"
+	require_clean
+	require_gh
+	read_version "${1:-}"
+	git fetch origin
+	git checkout "$DEFAULT_BASE_BRANCH"
+	git pull --ff-only
+	if git show-ref --verify --quiet "refs/heads/$REL_BRANCH"; then
+		echo "==> Branch $REL_BRANCH already exists, checking it out…"
+		git checkout "$REL_BRANCH"
+	else
+		echo "==> Creating branch $REL_BRANCH from $DEFAULT_BASE_BRANCH…"
+		git checkout -b "$REL_BRANCH" "$DEFAULT_BASE_BRANCH"
+		git push -u origin "$REL_BRANCH"
+	fi
+	echo "OK: Ready on branch $REL_BRANCH"
 }
 
 open_pr() {
-    local push_remote remote_ref remote_info behind ahead pushed=0
-    local prnum check_output check_status recheck_status start_time total_time pr_url i
-    local open_pr_status=0
-    require_clean
-    require_gh
-    read_release_branch
-    trap 'rm -f "${PR_BODY_FILE:-}"' EXIT
+	local push_remote remote_ref remote_info behind ahead pushed=0
+	local prnum check_output check_status recheck_status start_time total_time pr_url i
+	local open_pr_status=0
+	require_clean
+	require_gh
+	read_release_branch
+	trap 'rm -f "${PR_BODY_FILE:-}"' EXIT
 
-    push_remote=$(git config --get "branch.$BRANCH.remote" 2>/dev/null || echo origin)
-    remote_ref=refs/remotes/$push_remote/$BRANCH
-    if ! remote_info=$(git ls-remote --heads "$push_remote" "refs/heads/$BRANCH"); then
-        die "Unable to query $push_remote/$BRANCH; refusing to use a stale tracking ref."
-    fi
-    if [[ -z $remote_info ]]; then
-        echo "==> $push_remote/$BRANCH does not exist yet - publishing…"
-        git push -u "$push_remote" "HEAD:refs/heads/$BRANCH"
-        pushed=1
-    else
-        git fetch --quiet "$push_remote" "+refs/heads/$BRANCH:$remote_ref" ||
-            die "Unable to fetch $push_remote/$BRANCH; refusing to use a stale tracking ref."
-        behind=$(git rev-list --count "HEAD..$remote_ref")
-        ahead=$(git rev-list --count "$remote_ref..HEAD")
-        if ((behind > 0 && ahead > 0)); then
-            die "$BRANCH has diverged from $push_remote/$BRANCH ($behind behind, $ahead ahead). Reconcile deliberately, then re-run."
-        fi
-        ((behind == 0)) || die "$BRANCH is $behind commit(s) behind $push_remote/$BRANCH. Reconcile first, then re-run."
-        if ((ahead > 0)); then
-            echo "==> Publishing $ahead local commit(s) to $push_remote/$BRANCH…"
-            git push "$push_remote" "HEAD:refs/heads/$BRANCH"
-            pushed=1
-        else
-            echo "==> $BRANCH already in sync with $push_remote/$BRANCH - nothing to push."
-        fi
-    fi
+	push_remote=$(git config --get "branch.$BRANCH.remote" 2>/dev/null || echo origin)
+	remote_ref=refs/remotes/$push_remote/$BRANCH
+	if ! remote_info=$(git ls-remote --heads "$push_remote" "refs/heads/$BRANCH"); then
+		die "Unable to query $push_remote/$BRANCH; refusing to use a stale tracking ref."
+	fi
+	if [[ -z $remote_info ]]; then
+		echo "==> $push_remote/$BRANCH does not exist yet - publishing…"
+		git push -u "$push_remote" "HEAD:refs/heads/$BRANCH"
+		pushed=1
+	else
+		git fetch --quiet "$push_remote" "+refs/heads/$BRANCH:$remote_ref" ||
+			die "Unable to fetch $push_remote/$BRANCH; refusing to use a stale tracking ref."
+		behind=$(git rev-list --count "HEAD..$remote_ref")
+		ahead=$(git rev-list --count "$remote_ref..HEAD")
+		if ((behind > 0 && ahead > 0)); then
+			die "$BRANCH has diverged from $push_remote/$BRANCH ($behind behind, $ahead ahead). Reconcile deliberately, then re-run."
+		fi
+		((behind == 0)) || die "$BRANCH is $behind commit(s) behind $push_remote/$BRANCH. Reconcile first, then re-run."
+		if ((ahead > 0)); then
+			echo "==> Publishing $ahead local commit(s) to $push_remote/$BRANCH…"
+			git push "$push_remote" "HEAD:refs/heads/$BRANCH"
+			pushed=1
+		else
+			echo "==> $BRANCH already in sync with $push_remote/$BRANCH - nothing to push."
+		fi
+	fi
 
-    prnum=$(gh pr list "${repo_args[@]}" --base "$DEFAULT_BASE_BRANCH" --head "$BRANCH" \
-        --state open --json number --jq '.[0].number') ||
-        die "Unable to query open PRs for $BRANCH."
-    if [[ -n $prnum && $prnum != null ]]; then
-        echo "==> An open PR (#$prnum) from $BRANCH -> $DEFAULT_BASE_BRANCH already exists."
-        if ((pushed == 1)); then
-            echo '==> Refreshing PR body with the latest changelog…'
-            generate_pr_body
-            gh pr edit "${repo_args[@]}" "$prnum" --body-file "$PR_BODY_FILE"
-            echo 'OK: PR body updated.'
-        fi
-    else
-        echo "==> Opening PR: $BRANCH -> $DEFAULT_BASE_BRANCH…"
-        generate_pr_body
-        gh pr create "${repo_args[@]}" --base "$DEFAULT_BASE_BRANCH" --head "$BRANCH" \
-            --title "Release $VERSION" --body-file "$PR_BODY_FILE"
-        prnum=$(gh pr list "${repo_args[@]}" --base "$DEFAULT_BASE_BRANCH" --head "$BRANCH" \
-            --state open --json number --jq '.[0].number')
-    fi
+	prnum=$(gh pr list "${repo_args[@]}" --base "$DEFAULT_BASE_BRANCH" --head "$BRANCH" \
+		--state open --json number --jq '.[0].number') ||
+		die "Unable to query open PRs for $BRANCH."
+	if [[ -n $prnum && $prnum != null ]]; then
+		echo "==> An open PR (#$prnum) from $BRANCH -> $DEFAULT_BASE_BRANCH already exists."
+		if ((pushed == 1)); then
+			echo '==> Refreshing PR body with the latest changelog…'
+			generate_pr_body
+			gh pr edit "${repo_args[@]}" "$prnum" --body-file "$PR_BODY_FILE"
+			echo 'OK: PR body updated.'
+		fi
+	else
+		echo "==> Opening PR: $BRANCH -> $DEFAULT_BASE_BRANCH…"
+		generate_pr_body
+		gh pr create "${repo_args[@]}" --base "$DEFAULT_BASE_BRANCH" --head "$BRANCH" \
+			--title "Release $VERSION" --body-file "$PR_BODY_FILE"
+		prnum=$(gh pr list "${repo_args[@]}" --base "$DEFAULT_BASE_BRANCH" --head "$BRANCH" \
+			--state open --json number --jq '.[0].number')
+	fi
 
-    echo
-    echo '==> Waiting for CI checks to register...'
-    sleep 3
-    for i in 1 2 3 4 5; do
-        check_output=$(gh pr checks "${repo_args[@]}" "$prnum" 2>&1 || true)
-        grep -q 'no checks reported' <<<"$check_output" || break
-        ((i == 5)) || { echo "==> Retrying in 2s... (attempt $i/5)"; sleep 2; }
-    done
-    if grep -q 'no checks reported' <<<"$check_output"; then
-        echo 'WARN: No CI checks detected after 15s. Skipping check wait.'
-        echo '    Checks might start later - monitor the PR manually.'
-    else
-        echo "==> Waiting for checks to complete on PR #$prnum…"
-        echo "    (Ctrl+C stops watching; re-run 'gh release-flow open-pr' to resume)"
-        echo
-        start_time=$(date +%s)
-        if gh pr checks "${repo_args[@]}" "$prnum" --watch --interval 5; then
-            check_status=0
-        else
-            check_status=$?
-        fi
-        total_time=$(($(date +%s) - start_time))
-        echo
-        if ((check_status == 0)); then
-            printf 'OK: All checks passed! (took %02d:%02d)\n' $((total_time / 60)) $((total_time % 60))
-        else
-            recheck_status=0
-            gh pr checks "${repo_args[@]}" "$prnum" >/dev/null 2>&1 || recheck_status=$?
-            if ((recheck_status == 0)); then
-                printf 'OK: All checks passed! (took %02d:%02d)\n' $((total_time / 60)) $((total_time % 60))
-            elif ((check_status == 130 || recheck_status == 8)); then
-                echo 'WARN: Check monitoring stopped while checks are still pending.'
-                echo "    Re-run 'gh release-flow open-pr' to resume watching."
-                open_pr_status=1
-            else
-                gh pr checks "${repo_args[@]}" "$prnum" || true
-                echo
-                echo "ERROR: Checks failed on PR #$prnum."
-                open_pr_status=1
-            fi
-        fi
-    fi
+	echo
+	echo '==> Waiting for CI checks to register...'
+	sleep 3
+	for i in 1 2 3 4 5; do
+		check_output=$(gh pr checks "${repo_args[@]}" "$prnum" 2>&1 || true)
+		grep -q 'no checks reported' <<<"$check_output" || break
+		((i == 5)) || {
+			echo "==> Retrying in 2s... (attempt $i/5)"
+			sleep 2
+		}
+	done
+	if grep -q 'no checks reported' <<<"$check_output"; then
+		echo 'WARN: No CI checks detected after 15s. Skipping check wait.'
+		echo '    Checks might start later - monitor the PR manually.'
+	else
+		echo "==> Waiting for checks to complete on PR #$prnum…"
+		echo "    (Ctrl+C stops watching; re-run 'gh release-flow open-pr' to resume)"
+		echo
+		start_time=$(date +%s)
+		if gh pr checks "${repo_args[@]}" "$prnum" --watch --interval 5; then
+			check_status=0
+		else
+			check_status=$?
+		fi
+		total_time=$(($(date +%s) - start_time))
+		echo
+		if ((check_status == 0)); then
+			printf 'OK: All checks passed! (took %02d:%02d)\n' $((total_time / 60)) $((total_time % 60))
+		else
+			recheck_status=0
+			gh pr checks "${repo_args[@]}" "$prnum" >/dev/null 2>&1 || recheck_status=$?
+			if ((recheck_status == 0)); then
+				printf 'OK: All checks passed! (took %02d:%02d)\n' $((total_time / 60)) $((total_time % 60))
+			elif ((check_status == 130 || recheck_status == 8)); then
+				echo 'WARN: Check monitoring stopped while checks are still pending.'
+				echo "    Re-run 'gh release-flow open-pr' to resume watching."
+				open_pr_status=1
+			else
+				gh pr checks "${repo_args[@]}" "$prnum" || true
+				echo
+				echo "ERROR: Checks failed on PR #$prnum."
+				open_pr_status=1
+			fi
+		fi
+	fi
 
-    echo
-    pr_url=$(gh pr view "${repo_args[@]}" "$prnum" --json url --jq '.url' 2>/dev/null || true)
-    [[ -z $pr_url ]] && echo "==> View PR #$prnum with: gh pr view $prnum" || echo "==> PR #$prnum: $pr_url"
-    return "$open_pr_status"
+	echo
+	pr_url=$(gh pr view "${repo_args[@]}" "$prnum" --json url --jq '.url' 2>/dev/null || true)
+	[[ -z $pr_url ]] && echo "==> View PR #$prnum with: gh pr view $prnum" || echo "==> PR #$prnum: $pr_url"
+	return "$open_pr_status"
 }
 
 merge_release() {
-    local push_remote prnum='' pr_state='' release_head remote_info remote_head
-    local pr_info pr_base pr_head pr_oid previous commit_count commit_scope answer
-    local workflow_tsv='' run_id status conclusion created head_branch event title i
-    local workflow_success=0 watch_status start_time total_time final_conclusion
-    local cleanup_info release_url
-    require_clean
-    require_gh
-    read_release_branch
-    push_remote=$(git config --get "branch.$BRANCH.remote" 2>/dev/null || echo origin)
+	local push_remote prnum='' pr_state='' release_head remote_info remote_head
+	local pr_info pr_base pr_head pr_oid previous commit_count commit_scope answer
+	local workflow_tsv='' run_id status conclusion created head_branch event title i
+	local workflow_success=0 watch_status start_time total_time final_conclusion
+	local cleanup_info release_url
+	require_clean
+	require_gh
+	read_release_branch
+	push_remote=$(git config --get "branch.$BRANCH.remote" 2>/dev/null || echo origin)
 
-    if [[ -n $PR ]]; then
-        prnum=$PR
-        pr_state=$(gh pr view "${repo_args[@]}" "$prnum" --json state --jq '.state') ||
-            die "Unable to query PR #$prnum."
-    else
-        prnum=$(gh pr list "${repo_args[@]}" --base "$DEFAULT_BASE_BRANCH" --head "$BRANCH" \
-            --state open --json number --jq '.[0].number') ||
-            die "Unable to query open PRs for $BRANCH."
-        if [[ -n $prnum && $prnum != null ]]; then
-            pr_state=OPEN
-        else
-            prnum=$(gh pr list "${repo_args[@]}" --base "$DEFAULT_BASE_BRANCH" --head "$BRANCH" \
-                --state merged --json number --jq '.[0].number') ||
-                die "Unable to query merged PRs for $BRANCH."
-            [[ -z $prnum || $prnum == null ]] || pr_state=MERGED
-        fi
-    fi
-    [[ -n $prnum && $prnum != null ]] ||
-        die "No open or merged PR from $BRANCH to $DEFAULT_BASE_BRANCH."
+	if [[ -n $PR ]]; then
+		prnum=$PR
+		pr_state=$(gh pr view "${repo_args[@]}" "$prnum" --json state --jq '.state') ||
+			die "Unable to query PR #$prnum."
+	else
+		prnum=$(gh pr list "${repo_args[@]}" --base "$DEFAULT_BASE_BRANCH" --head "$BRANCH" \
+			--state open --json number --jq '.[0].number') ||
+			die "Unable to query open PRs for $BRANCH."
+		if [[ -n $prnum && $prnum != null ]]; then
+			pr_state=OPEN
+		else
+			prnum=$(gh pr list "${repo_args[@]}" --base "$DEFAULT_BASE_BRANCH" --head "$BRANCH" \
+				--state merged --json number --jq '.[0].number') ||
+				die "Unable to query merged PRs for $BRANCH."
+			[[ -z $prnum || $prnum == null ]] || pr_state=MERGED
+		fi
+	fi
+	[[ -n $prnum && $prnum != null ]] ||
+		die "No open or merged PR from $BRANCH to $DEFAULT_BASE_BRANCH."
 
-    if [[ $pr_state == MERGED ]]; then
-        echo "==> PR #$prnum from $BRANCH is already merged - resuming release watch and cleanup."
-        pr_info=$(gh pr view "${repo_args[@]}" "$prnum" \
-            --json baseRefName,headRefName,headRefOid \
-            --jq '[.baseRefName, .headRefName, .headRefOid] | @tsv')
-        IFS=$'\t' read -r pr_base pr_head release_head <<<"$pr_info"
-        [[ $pr_base == "$DEFAULT_BASE_BRANCH" && $pr_head == "$BRANCH" && -n $release_head ]] ||
-            die "PR #$prnum is not a merged $BRANCH -> $DEFAULT_BASE_BRANCH release PR."
-    elif [[ $pr_state == OPEN ]]; then
-        echo "==> Checking status of PR #$prnum…"
-        local check_output
-        check_output=$(gh pr checks "${repo_args[@]}" "$prnum" 2>&1 || true)
-        if grep -q 'no checks reported' <<<"$check_output"; then
-            die "No CI checks are reported for PR #$prnum. Wait for checks, then re-run."
-        fi
-        gh pr checks "${repo_args[@]}" "$prnum" >/dev/null 2>&1 ||
-            die "Checks have not passed. Run 'gh release-flow open-pr' first."
-        echo 'OK: All checks passed.'
+	if [[ $pr_state == MERGED ]]; then
+		echo "==> PR #$prnum from $BRANCH is already merged - resuming release watch and cleanup."
+		pr_info=$(gh pr view "${repo_args[@]}" "$prnum" \
+			--json baseRefName,headRefName,headRefOid \
+			--jq '[.baseRefName, .headRefName, .headRefOid] | @tsv')
+		IFS=$'\t' read -r pr_base pr_head release_head <<<"$pr_info"
+		[[ $pr_base == "$DEFAULT_BASE_BRANCH" && $pr_head == "$BRANCH" && -n $release_head ]] ||
+			die "PR #$prnum is not a merged $BRANCH -> $DEFAULT_BASE_BRANCH release PR."
+	elif [[ $pr_state == OPEN ]]; then
+		echo "==> Checking status of PR #$prnum…"
+		local check_output
+		check_output=$(gh pr checks "${repo_args[@]}" "$prnum" 2>&1 || true)
+		if grep -q 'no checks reported' <<<"$check_output"; then
+			die "No CI checks are reported for PR #$prnum. Wait for checks, then re-run."
+		fi
+		gh pr checks "${repo_args[@]}" "$prnum" >/dev/null 2>&1 ||
+			die "Checks have not passed. Run 'gh release-flow open-pr' first."
+		echo 'OK: All checks passed.'
 
-        remote_info=$(git ls-remote --heads "$push_remote" "refs/heads/$BRANCH") ||
-            die "Unable to query $push_remote/$BRANCH; refusing to merge an unsynchronized PR."
-        [[ -n $remote_info ]] || die "$push_remote/$BRANCH does not exist; refusing to merge."
-        release_head=$(git rev-parse HEAD)
-        remote_head=${remote_info%%$'\t'*}
-        [[ $release_head == "$remote_head" ]] ||
-            die "Local HEAD is not synchronized with $push_remote/$BRANCH. Push or reconcile, then re-run."
-        pr_info=$(gh pr view "${repo_args[@]}" "$prnum" \
-            --json baseRefName,headRefName,headRefOid \
-            --jq '[.baseRefName, .headRefName, .headRefOid] | @tsv')
-        IFS=$'\t' read -r pr_base pr_head pr_oid <<<"$pr_info"
-        [[ $pr_base == "$DEFAULT_BASE_BRANCH" && $pr_head == "$BRANCH" && $pr_oid == "$release_head" ]] ||
-            die "PR #$prnum is not synchronized with local $BRANCH. Push or reconcile, then re-run."
-        gh pr merge --help 2>&1 | grep -q -- '--match-head-commit' ||
-            die 'Update gh: this flow requires pr merge --match-head-commit.'
+		remote_info=$(git ls-remote --heads "$push_remote" "refs/heads/$BRANCH") ||
+			die "Unable to query $push_remote/$BRANCH; refusing to merge an unsynchronized PR."
+		[[ -n $remote_info ]] || die "$push_remote/$BRANCH does not exist; refusing to merge."
+		release_head=$(git rev-parse HEAD)
+		remote_head=${remote_info%%$'\t'*}
+		[[ $release_head == "$remote_head" ]] ||
+			die "Local HEAD is not synchronized with $push_remote/$BRANCH. Push or reconcile, then re-run."
+		pr_info=$(gh pr view "${repo_args[@]}" "$prnum" \
+			--json baseRefName,headRefName,headRefOid \
+			--jq '[.baseRefName, .headRefName, .headRefOid] | @tsv')
+		IFS=$'\t' read -r pr_base pr_head pr_oid <<<"$pr_info"
+		[[ $pr_base == "$DEFAULT_BASE_BRANCH" && $pr_head == "$BRANCH" && $pr_oid == "$release_head" ]] ||
+			die "PR #$prnum is not synchronized with local $BRANCH. Push or reconcile, then re-run."
+		gh pr merge --help 2>&1 | grep -q -- '--match-head-commit' ||
+			die 'Update gh: this flow requires pr merge --match-head-commit.'
 
-        previous=$(git tag --list 'v*' --sort=-v:refname | grep -v "^$VERSION$" | head -n1 || true)
-        if [[ -n $previous ]]; then
-            commit_count=$(git rev-list --count "$previous..HEAD" 2>/dev/null || echo '?')
-            commit_scope="since $previous"
-        else
-            commit_count=$(git rev-list --count HEAD)
-            commit_scope=total
-        fi
-        echo
-        echo "==> Ready to merge release $VERSION:"
-        echo "    PR:      #$prnum ($BRANCH -> $DEFAULT_BASE_BRANCH)"
-        echo "    Commits: $commit_count $commit_scope"
-        echo "    Head:    $release_head"
-        if [[ $CONFIRM == 0 ]]; then
-            echo '==> CONFIRM=0 set - skipping confirmation prompt.'
-        else
-            printf '    Merge PR #%s into %s? [y/N] ' "$prnum" "$DEFAULT_BASE_BRANCH"
-            read -r answer || answer=''
-            [[ $answer =~ ^([yY]|yes|YES)$ ]] || die 'Merge aborted.'
-        fi
-        echo
-        echo "==> Merging PR #$prnum…"
-        gh pr merge "${repo_args[@]}" "$prnum" --merge --match-head-commit "$release_head" ||
-            die 'Merge failed. Branch not deleted.'
-    else
-        die "PR #$prnum state is '$pr_state' (expected OPEN or MERGED)."
-    fi
+		previous=$(git tag --list 'v*' --sort=-v:refname | grep -v "^$VERSION$" | head -n1 || true)
+		if [[ -n $previous ]]; then
+			commit_count=$(git rev-list --count "$previous..HEAD" 2>/dev/null || echo '?')
+			commit_scope="since $previous"
+		else
+			commit_count=$(git rev-list --count HEAD)
+			commit_scope=total
+		fi
+		echo
+		echo "==> Ready to merge release $VERSION:"
+		echo "    PR:      #$prnum ($BRANCH -> $DEFAULT_BASE_BRANCH)"
+		echo "    Commits: $commit_count $commit_scope"
+		echo "    Head:    $release_head"
+		if [[ $CONFIRM == 0 ]]; then
+			echo '==> CONFIRM=0 set - skipping confirmation prompt.'
+		else
+			printf '    Merge PR #%s into %s? [y/N] ' "$prnum" "$DEFAULT_BASE_BRANCH"
+			read -r answer || answer=''
+			[[ $answer =~ ^([yY]|yes|YES)$ ]] || die 'Merge aborted.'
+		fi
+		echo
+		echo "==> Merging PR #$prnum…"
+		gh pr merge "${repo_args[@]}" "$prnum" --merge --match-head-commit "$release_head" ||
+			die 'Merge failed. Branch not deleted.'
+	else
+		die "PR #$prnum state is '$pr_state' (expected OPEN or MERGED)."
+	fi
 
-    echo "==> Tag to be released: $VERSION"
-    echo
-    echo '==> Checking for release workflow...'
-    sleep 2
-    for ((i = 1; i <= 10; i++)); do
-        workflow_tsv=$(gh run list "${repo_args[@]}" --workflow="$RELEASE_WORKFLOW" \
-            --event pull_request --commit "$release_head" --limit 1 \
-            --json databaseId,status,conclusion,name,createdAt,displayTitle,headBranch,event \
-            --jq "$run_tsv_filter")
-        [[ -z $workflow_tsv ]] || break
-        echo "==> Waiting for workflow to start... (attempt $i/10)"
-        sleep 2
-    done
-    [[ -n $workflow_tsv ]] ||
-        die "Could not identify the $RELEASE_WORKFLOW run for $VERSION. Re-run after it starts."
-    IFS=$'\t' read -r run_id status conclusion created head_branch event title <<<"$workflow_tsv"
-    echo '==> Release workflow found'
-    echo "    Run ID: #$run_id"
-    echo "    Title: $title"
-    echo "    Event: $event"
-    echo "    Branch: $head_branch"
-    echo "    Status: $status"
-    echo "    Started: $created"
+	echo "==> Tag to be released: $VERSION"
+	echo
+	echo '==> Checking for release workflow...'
+	sleep 2
+	for ((i = 1; i <= 10; i++)); do
+		workflow_tsv=$(gh run list "${repo_args[@]}" --workflow="$RELEASE_WORKFLOW" \
+			--event pull_request --commit "$release_head" --limit 1 \
+			--json databaseId,status,conclusion,name,createdAt,displayTitle,headBranch,event \
+			--jq "$run_tsv_filter")
+		[[ -z $workflow_tsv ]] || break
+		echo "==> Waiting for workflow to start... (attempt $i/10)"
+		sleep 2
+	done
+	[[ -n $workflow_tsv ]] ||
+		die "Could not identify the $RELEASE_WORKFLOW run for $VERSION. Re-run after it starts."
+	IFS=$'\t' read -r run_id status conclusion created head_branch event title <<<"$workflow_tsv"
+	echo '==> Release workflow found'
+	echo "    Run ID: #$run_id"
+	echo "    Title: $title"
+	echo "    Event: $event"
+	echo "    Branch: $head_branch"
+	echo "    Status: $status"
+	echo "    Started: $created"
 
-    if [[ $status != completed ]]; then
-        echo
-        echo "==> Watching release workflow #$run_id..."
-        echo "    (Ctrl+C stops watching; re-run 'gh release-flow merge' to resume)"
-        echo
-        start_time=$(date +%s)
-        if gh run watch "${repo_args[@]}" "$run_id" --exit-status; then
-            watch_status=0
-        else
-            watch_status=$?
-        fi
-        total_time=$(($(date +%s) - start_time))
-        if ((watch_status == 0)); then
-            printf 'OK: Release workflow completed! (took %02d:%02d)\n' $((total_time / 60)) $((total_time % 60))
-            workflow_success=1
-        elif ((watch_status == 130)); then
-            die "Monitoring cancelled. Re-run 'gh release-flow merge' to resume."
-        else
-            final_conclusion=$(gh run view "${repo_args[@]}" "$run_id" \
-                --json conclusion --jq '.conclusion // ""' 2>/dev/null || true)
-            if [[ $final_conclusion == success ]]; then
-                workflow_success=1
-            else
-                echo "ERROR: Release workflow failed (conclusion: ${final_conclusion:-unknown})"
-                gh run view "${repo_args[@]}" "$run_id" || true
-            fi
-        fi
-    else
-        echo "==> Workflow already completed: $conclusion"
-        [[ $conclusion == success ]] && workflow_success=1
-        gh run view "${repo_args[@]}" "$run_id" || true
-    fi
+	if [[ $status != completed ]]; then
+		echo
+		echo "==> Watching release workflow #$run_id..."
+		echo "    (Ctrl+C stops watching; re-run 'gh release-flow merge' to resume)"
+		echo
+		start_time=$(date +%s)
+		if gh run watch "${repo_args[@]}" "$run_id" --exit-status; then
+			watch_status=0
+		else
+			watch_status=$?
+		fi
+		total_time=$(($(date +%s) - start_time))
+		if ((watch_status == 0)); then
+			printf 'OK: Release workflow completed! (took %02d:%02d)\n' $((total_time / 60)) $((total_time % 60))
+			workflow_success=1
+		elif ((watch_status == 130)); then
+			die "Monitoring cancelled. Re-run 'gh release-flow merge' to resume."
+		else
+			final_conclusion=$(gh run view "${repo_args[@]}" "$run_id" \
+				--json conclusion --jq '.conclusion // ""' 2>/dev/null || true)
+			if [[ $final_conclusion == success ]]; then
+				workflow_success=1
+			else
+				echo "ERROR: Release workflow failed (conclusion: ${final_conclusion:-unknown})"
+				gh run view "${repo_args[@]}" "$run_id" || true
+			fi
+		fi
+	else
+		echo "==> Workflow already completed: $conclusion"
+		[[ $conclusion == success ]] && workflow_success=1
+		gh run view "${repo_args[@]}" "$run_id" || true
+	fi
 
-    echo
-    if ((workflow_success == 1)); then
-        echo "==> Cleaning up: deleting branch $BRANCH..."
-        git checkout "$DEFAULT_BASE_BRANCH"
-        git pull --ff-only
-        git merge-base --is-ancestor "$release_head" "$DEFAULT_BASE_BRANCH" ||
-            die "$BRANCH is not contained in $DEFAULT_BASE_BRANCH; leaving branch refs intact."
-        cleanup_info=$(git ls-remote --heads "$push_remote" "refs/heads/$BRANCH") ||
-            die "Unable to query $push_remote/$BRANCH for safe cleanup."
-        if [[ -n $cleanup_info && ${cleanup_info%%$'\t'*} != "$release_head" ]]; then
-            die "$push_remote/$BRANCH advanced after merge; leaving branch refs intact."
-        fi
-        if [[ -n $cleanup_info ]]; then
-            git push --force-with-lease="refs/heads/$BRANCH:$release_head" \
-                "$push_remote" ":refs/heads/$BRANCH" ||
-                die "Unable to delete remote branch; local branch kept for retry."
-        fi
-        git branch -d "$BRANCH" || die "Unable to delete local branch $BRANCH."
-        echo 'OK: Branch cleanup complete'
-        release_url=$(gh release view "${repo_args[@]}" "$VERSION" --json url --jq '.url' 2>/dev/null || true)
-        echo
-        [[ -z $release_url ]] && echo "OK: Release $VERSION complete. View it with: gh release view $VERSION" ||
-            echo "OK: Release $VERSION published: $release_url"
-    else
-        die "Workflow did not succeed. Keeping branch $BRANCH for debugging."
-    fi
+	echo
+	if ((workflow_success == 1)); then
+		echo "==> Cleaning up: deleting branch $BRANCH..."
+		git checkout "$DEFAULT_BASE_BRANCH"
+		git pull --ff-only
+		git merge-base --is-ancestor "$release_head" "$DEFAULT_BASE_BRANCH" ||
+			die "$BRANCH is not contained in $DEFAULT_BASE_BRANCH; leaving branch refs intact."
+		cleanup_info=$(git ls-remote --heads "$push_remote" "refs/heads/$BRANCH") ||
+			die "Unable to query $push_remote/$BRANCH for safe cleanup."
+		if [[ -n $cleanup_info && ${cleanup_info%%$'\t'*} != "$release_head" ]]; then
+			die "$push_remote/$BRANCH advanced after merge; leaving branch refs intact."
+		fi
+		if [[ -n $cleanup_info ]]; then
+			git push --force-with-lease="refs/heads/$BRANCH:$release_head" \
+				"$push_remote" ":refs/heads/$BRANCH" ||
+				die "Unable to delete remote branch; local branch kept for retry."
+		fi
+		git branch -d "$BRANCH" || die "Unable to delete local branch $BRANCH."
+		echo 'OK: Branch cleanup complete'
+		release_url=$(gh release view "${repo_args[@]}" "$VERSION" --json url --jq '.url' 2>/dev/null || true)
+		echo
+		[[ -z $release_url ]] && echo "OK: Release $VERSION complete. View it with: gh release view $VERSION" ||
+			echo "OK: Release $VERSION published: $release_url"
+	else
+		die "Workflow did not succeed. Keeping branch $BRANCH for debugging."
+	fi
 }
 
 usage() {
-    cat <<'EOF'
+	cat <<'EOF'
 Usage:
   gh release-flow start-dev [version]
   gh release-flow open-pr
@@ -433,17 +448,29 @@ EOF
 }
 
 main() {
-    local command=${1:-}
-    [[ -z $command ]] || shift
-    case $command in
-        start-dev) (($# <= 1)) || die 'start-dev accepts one version.'; start_dev "${1:-}" ;;
-        open-pr) (($# == 0)) || die 'open-pr accepts no arguments.'; open_pr ;;
-        merge | merge-release) (($# == 0)) || die 'merge accepts no arguments.'; merge_release ;;
-        -h | --help | help | '') usage ;;
-        *) usage >&2; exit 2 ;;
-    esac
+	local command=${1:-}
+	[[ -z $command ]] || shift
+	case $command in
+	start-dev)
+		(($# <= 1)) || die 'start-dev accepts one version.'
+		start_dev "${1:-}"
+		;;
+	open-pr)
+		(($# == 0)) || die 'open-pr accepts no arguments.'
+		open_pr
+		;;
+	merge | merge-release)
+		(($# == 0)) || die 'merge accepts no arguments.'
+		merge_release
+		;;
+	-h | --help | help | '') usage ;;
+	*)
+		usage >&2
+		exit 2
+		;;
+	esac
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
-    main "$@"
+	main "$@"
 fi
