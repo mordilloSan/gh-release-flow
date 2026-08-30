@@ -81,7 +81,7 @@ The command:
 1. Refuses to run when tracked files have staged or unstaged changes.
 2. Reads the version from the argument, then `VERSION`, or prompts for it.
 3. Normalizes an uppercase `V` prefix to lowercase.
-4. Validates the version and maps it to a `dev/<version>` branch.
+4. Validates the version and resulting `dev/<version>` Git branch name.
 5. Fetches `origin`, checks out the base branch, and fast-forward pulls it.
 6. Checks out an existing local release branch or creates and publishes a new
    one.
@@ -107,8 +107,8 @@ The command:
    branch is strictly ahead.
 4. Refuses to continue if the local branch is behind or has diverged from the
    remote branch.
-5. Reuses an open PR for the same head and base branches, or creates one titled
-   `Release <version>`.
+5. Reuses an open PR from the push repository with the same head and base
+   branches, or creates one titled `Release <version>`.
 6. Generates the PR body from the repository's commit history.
 7. Waits briefly for CI checks to register, then watches them to completion.
 8. Prints the PR URL and exits unsuccessfully if checks fail or remain pending
@@ -135,16 +135,16 @@ PR=123 gh release-flow merge
 
 For an open PR, the command:
 
-1. Finds the PR for the current release branch, or uses the PR selected by
-   `PR`.
+1. Finds the PR from the push repository for the current release branch, or
+   validates the PR selected by `PR` against that repository.
 2. Requires registered, successful PR checks.
 3. Verifies the local commit, remote branch, and PR head are the same commit.
 4. Shows the release version, PR, commit count, and exact head commit.
 5. Requests confirmation unless `CONFIRM=0`.
 6. Creates a merge commit with `--match-head-commit`, preventing a changed PR
    head from being merged accidentally.
-7. Finds the configured release workflow run for the release head commit and
-   watches it to completion.
+7. Finds the configured release workflow run for the release head commit that
+   was created no earlier than the PR merge, and watches it to completion.
 
 After the workflow succeeds, it:
 
@@ -163,10 +163,9 @@ release branch is kept for debugging and the command can be run again.
 
 ## Generated changelog
 
-`open-pr` builds the pull request body from Git history. It selects the newest
-version-sorted `v*` tag other than the current version and includes non-merge
-commits from that tag through `HEAD`. With no previous tag, it uses the full
-history.
+`open-pr` builds the pull request body from Git history. It selects the nearest
+reachable `v*` tag other than the current version and includes non-merge commits
+from that tag through `HEAD`. With no previous tag, it uses the full history.
 
 Conventional Commit prefixes are grouped as follows:
 
@@ -185,9 +184,10 @@ Conventional Commit prefixes are grouped as follows:
 | anything else | Other Changes |
 
 Scoped prefixes such as `feat(api):` are supported. Each entry includes the
-subject, linked short commit hash, and author. Merge commits, commits authored
-by `github-actions[bot]`, and commits whose subject is `changelog` are omitted.
-The body ends with unique contributors and a full-changelog link.
+subject, linked short commit hash, and author name as plain text. Merge commits,
+commits authored by `github-actions[bot]`, and commits whose subject is
+`changelog` are omitted. The body ends with unique contributors and a
+full-changelog link.
 
 The repository used in commit links is resolved from `REPO`, then
 `GITHUB_REPOSITORY`, then the `origin` URL.
@@ -240,8 +240,11 @@ commands above; these internal functions implement that interface.
 | `die` | Prints a consistent error and exits non-zero. |
 | `require_clean` | Rejects staged or unstaged tracked-file changes. |
 | `require_gh` | Verifies that GitHub CLI is available. |
+| `push_repo_owner` | Resolves the owner of the release branch's push repository. |
+| `find_pr` | Finds a branch PR owned by that push repository. |
 | `read_version` | Reads, normalizes, and validates a version, then derives its release branch. |
 | `read_release_branch` | Validates the current branch and extracts its version. |
+| `previous_tag` | Finds the nearest reachable release tag. |
 | `generate_changelog` | Groups commits, renders contributors, and adds compare or release links. |
 | `generate_pr_body` | Resolves repository and tag context and writes the temporary PR body. |
 | `start_dev` | Updates the base branch and checks out or creates the release branch. |

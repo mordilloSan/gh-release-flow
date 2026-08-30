@@ -10,11 +10,13 @@ bin=$test_root/bin
 mkdir -p "$repo" "$bin"
 
 git -C "$repo" init -q
-git -C "$repo" config user.name Tester
+git -C "$repo" config user.name 'John Smith'
 git -C "$repo" config user.email tester@example.com
 git -C "$repo" commit --allow-empty -qm 'chore: base'
 git -C "$repo" branch -M main
 git -C "$repo" tag v0.1.0
+unrelated=$(git -C "$repo" commit-tree "$(git -C "$repo" write-tree)" -m 'unrelated release')
+git -C "$repo" tag v9.0.0 "$unrelated"
 git init --bare -q "$origin"
 git -C "$repo" remote add origin "$origin"
 git -C "$repo" push -qu origin main
@@ -26,9 +28,14 @@ cat >"$bin/gh" <<'EOF'
 set -euo pipefail
 args=" $* "
 case "$1 $2" in
-    'pr list')
-        if [[ $args == *' --state merged '* && ${GH_MERGED:-0} == 1 ]]; then
-            echo 17
+	'repo view') echo owner ;;
+	'pr list')
+		if [[ $args != *'number,headRepositoryOwner'* || $args != *'headRepositoryOwner.login'* ]]; then
+			echo 666
+			exit
+		fi
+		if [[ $args == *' --state merged '* && ${GH_MERGED:-0} == 1 ]]; then
+			echo 17
         elif [[ $args == *' --state open '* && ${GH_MERGED:-0} != 1 && -f $GH_STATE ]]; then
             echo 17
         fi
@@ -40,17 +47,26 @@ case "$1 $2" in
         done
         : >"$GH_STATE"
         ;;
-    'pr checks') echo 'no checks reported' ;;
-    'pr view')
-        if [[ $args == *' --json url '* ]]; then
-            echo 'https://github.com/owner/project/pull/17'
-        elif [[ $args == *' baseRefName,headRefName,headRefOid '* ]]; then
-            printf 'main\tdev/v0.2.0\t%s\n' "$(git rev-parse dev/v0.2.0)"
-        elif [[ $args == *' --json state '* ]]; then
-            echo MERGED
-        fi
-        ;;
-    'run list') printf '99\tcompleted\tsuccess\t2026-01-01T00:00:00Z\tdev/v0.2.0\tpull_request\tRelease v0.2.0\n' ;;
+	'pr checks') echo 'no checks reported' ;;
+	'pr view')
+		[[ ${3:-} != 666 ]] || exit 1
+		if [[ $args == *' --json url '* ]]; then
+			echo 'https://github.com/owner/project/pull/17'
+		elif [[ $args == *' baseRefName,headRefName,headRefOid,headRepositoryOwner '* ]]; then
+			printf 'main\tdev/v0.2.0\t%s\towner\n' "$(git rev-parse dev/v0.2.0)"
+		elif [[ $args == *' --json state '* ]]; then
+			echo MERGED
+		elif [[ $args == *' --json mergedAt '* ]]; then
+			echo '2026-01-02T00:00:00Z'
+		fi
+		;;
+	'run list')
+		if [[ $args == *' --created >=2026-01-02T00:00:00Z '* ]]; then
+			printf '99\tcompleted\tsuccess\t2026-01-02T00:00:01Z\tdev/v0.2.0\tpull_request\tRelease v0.2.0\n'
+		else
+			printf '98\tcompleted\tfailure\t2026-01-01T00:00:00Z\tdev/v0.2.0\tpull_request\tOld release run\n'
+		fi
+		;;
     'run view') ;;
     'release view') echo 'https://github.com/owner/project/releases/tag/v0.2.0' ;;
     *) echo "unexpected gh invocation: $*" >&2; exit 1 ;;
@@ -72,6 +88,17 @@ body=$test_root/pr-body
 [[ -s $body ]]
 grep -Fq '###  Bug Fixes' "$body"
 grep -Fq 'fix: preserve | pipe and \backslash' "$body"
+grep -Fq 'by John Smith' "$body"
+grep -Fq '* John Smith' "$body"
+if grep -Fq '@John Smith' "$body"; then
+	echo 'author name was converted to a GitHub mention' >&2
+	exit 1
+fi
+grep -Fq '/compare/v0.1.0...v0.2.0' "$body"
+if grep -Fq '/compare/v9.0.0...v0.2.0' "$body"; then
+	echo 'unreachable release tag was selected' >&2
+	exit 1
+fi
 git -C "$repo" ls-remote --exit-code --heads origin refs/heads/dev/v0.2.0 >/dev/null
 
 git -C "$repo" checkout -q main
@@ -96,4 +123,10 @@ fi
 source "$script_dir/gh-release-flow"
 read_version V1.2.3
 [[ $VERSION == v1.2.3 && $REL_BRANCH == dev/v1.2.3 ]]
+for invalid_version in v1.2.3-.. v1.2.3-foo.; do
+	if (read_version "$invalid_version" >/dev/null 2>&1); then
+		echo "invalid branch version accepted: $invalid_version" >&2
+		exit 1
+	fi
+done
 echo 'tests passed'
