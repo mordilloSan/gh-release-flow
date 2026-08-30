@@ -277,5 +277,5 @@ and version normalization without modifying the working repository.
 Validate the shell scripts with:
 
 ```bash
-shellcheck gh-release-flow test && shfmt -d gh-release-flow test
+make check
 ```

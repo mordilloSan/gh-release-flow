@@ -20,7 +20,6 @@ jobs:
           go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           printf '%s\n' "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: Check syntax and style
-        run: shellcheck gh-release-flow test && shfmt -d gh-release-flow test && actionlint
+        run: make check
       - name: Test behavior
         run: ./test
-

@@ -65,9 +65,9 @@ chmod +x "$bin/gh" "$bin/sleep"
 state=$test_root/gh-state
 body=$test_root/pr-body
 (
-    cd "$repo"
-    PATH="$bin:$PATH" GH_STATE=$state GH_BODY=$body \
-        "$script_dir/gh-release-flow" open-pr >/dev/null
+	cd "$repo"
+	PATH="$bin:$PATH" GH_STATE=$state GH_BODY=$body \
+		"$script_dir/gh-release-flow" open-pr >/dev/null
 )
 [[ -s $body ]]
 grep -Fq '###  Bug Fixes' "$body"
@@ -79,18 +79,18 @@ git -C "$repo" merge -q --no-ff dev/v0.2.0 -m 'Merge release'
 git -C "$repo" push -q origin main
 git -C "$repo" checkout -q dev/v0.2.0
 (
-    cd "$repo"
-    PATH="$bin:$PATH" GH_STATE=$state GH_BODY=$body GH_MERGED=1 \
-        "$script_dir/gh-release-flow" merge >/dev/null
+	cd "$repo"
+	PATH="$bin:$PATH" GH_STATE=$state GH_BODY=$body GH_MERGED=1 \
+		"$script_dir/gh-release-flow" merge >/dev/null
 )
 [[ $(git -C "$repo" branch --show-current) == main ]]
 if git -C "$repo" show-ref --verify --quiet refs/heads/dev/v0.2.0; then
-    echo 'local dev/v0.2.0 branch still exists' >&2
-    exit 1
+	echo 'local dev/v0.2.0 branch still exists' >&2
+	exit 1
 fi
 if git -C "$repo" ls-remote --exit-code --heads origin refs/heads/dev/v0.2.0 >/dev/null; then
-    echo 'remote dev/v0.2.0 branch still exists' >&2
-    exit 1
+	echo 'remote dev/v0.2.0 branch still exists' >&2
+	exit 1
 fi
 
 source "$script_dir/gh-release-flow"
