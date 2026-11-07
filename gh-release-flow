@@ -40,9 +40,15 @@ find_pr() {
 		--jq "map(select(.headRepositoryOwner.login == \"$owner\")) | .[0].number // empty"
 }
 
+latest_tag() {
+	git describe --tags --abbrev=0 --match 'v*' "origin/$DEFAULT_BASE_BRANCH" 2>/dev/null || true
+}
+
 read_version() {
-	local candidate=${1:-${VERSION:-}}
+	local candidate=${1:-${VERSION:-}} latest
 	if [[ -z $candidate ]]; then
+		latest=$(latest_tag)
+		[[ -n $latest ]] && echo "==> Latest release: $latest" || echo '==> No release tag yet.'
 		read -r -p 'Enter version (e.g. v1.2.3): ' candidate
 	fi
 	VERSION=${candidate/#V/v}
@@ -154,8 +160,8 @@ generate_pr_body() {
 start_dev() {
 	require_clean
 	require_gh
-	read_version "${1:-}"
 	git fetch origin
+	read_version "${1:-}"
 	git checkout "$DEFAULT_BASE_BRANCH"
 	git pull --ff-only
 	if git show-ref --verify --quiet "refs/heads/$REL_BRANCH"; then

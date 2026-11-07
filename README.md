@@ -79,10 +79,11 @@ VERSION=v1.2.3 gh release-flow start-dev
 The command:
 
 1. Refuses to run when tracked files have staged or unstaged changes.
-2. Reads the version from the argument, then `VERSION`, or prompts for it.
+2. Fetches `origin`, then reads the version from the argument, then `VERSION`,
+   or prompts for it, first showing the latest `v*` tag on the base branch.
 3. Normalizes an uppercase `V` prefix to lowercase.
 4. Validates the version and resulting `dev/<version>` Git branch name.
-5. Fetches `origin`, checks out the base branch, and fast-forward pulls it.
+5. Checks out the base branch and fast-forward pulls it.
 6. Checks out an existing local release branch or creates and publishes a new
    one.
 
@@ -200,7 +201,7 @@ All configuration is provided through environment variables.
 | --- | --- | --- | --- |
 | `DEFAULT_BASE_BRANCH` | `main` | all commands | Branch from which releases start and into which release PRs merge. |
 | `RELEASE_WORKFLOW` | `release.yml` | `merge` | Workflow file or name passed to `gh run list --workflow`. |
-| `VERSION` | prompt | `start-dev` | Version used when no command argument is provided. |
+| `VERSION` | prompt (suggests next minor) | `start-dev` | Version used when no command argument is provided. |
 | `REPO` | current repository | `open-pr`, `merge` | Repository passed to GitHub CLI as `--repo`; also used for changelog links. |
 | `PR` | auto-detected | `merge` | Specific PR number to validate and merge. |
 | `CONFIRM` | `1` | `merge` | Set to `0` to skip the merge confirmation prompt. |
@@ -242,6 +243,7 @@ commands above; these internal functions implement that interface.
 | `require_gh` | Verifies that GitHub CLI is available. |
 | `push_repo_owner` | Resolves the owner of the release branch's push repository. |
 | `find_pr` | Finds a branch PR owned by that push repository. |
+| `latest_tag` | Prints the latest `v*` tag on the fetched base branch. |
 | `read_version` | Reads, normalizes, and validates a version, then derives its release branch. |
 | `read_release_branch` | Validates the current branch and extracts its version. |
 | `previous_tag` | Finds the nearest reachable release tag. |
