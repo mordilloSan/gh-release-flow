@@ -36,16 +36,20 @@ Release. The `merge` command uses those details to find the exact workflow run.
 gh extension install mordilloSan/gh-release-flow
 ```
 
-Upgrade an existing installation with:
+Upgrade an existing installation to the latest `main` from any directory with:
 
 ```bash
-gh extension upgrade release-flow
+gh release-flow upgrade
 ```
 
-Display the available commands with:
+GitHub CLI checks for a newer version once a day when the extension runs and
+prints an upgrade notice when one is available.
+
+Display the available commands and the installed version with:
 
 ```bash
-gh release-flow --help
+gh release-flow help
+gh release-flow version
 ```
 
 ## Quick start
@@ -162,6 +166,39 @@ release branch is kept for debugging and the command can be run again.
 
 `merge-release` is an alias for `merge`.
 
+### `upgrade`
+
+Upgrades the installed extension to the latest commit on `main`. It runs
+`gh extension upgrade release-flow` and works from any directory.
+
+```bash
+gh release-flow upgrade
+```
+
+### `version`
+
+Prints the installed extension version. `--version` is an alias.
+
+```console
+$ gh release-flow version
+gh-release-flow v1.3.0
+```
+
+### `help`
+
+Prints command-line usage. `--help` and `-h` are aliases.
+
+```console
+$ gh release-flow help
+Usage:
+  gh release-flow start-dev [version]
+  gh release-flow open-pr
+  gh release-flow merge
+  gh release-flow upgrade
+  gh release-flow version
+  gh release-flow help
+```
+
 ## Generated changelog
 
 `open-pr` builds the pull request body from Git history. It selects the nearest
@@ -233,7 +270,7 @@ use the current checkout and its configured remotes.
 
 ## Shell function map
 
-The extension is a single Bash executable. Its public interface is the three
+The extension is a single Bash executable. Its public interface is the
 commands above; these internal functions implement that interface.
 
 | Function | Responsibility |

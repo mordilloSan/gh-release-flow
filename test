@@ -68,6 +68,7 @@ case "$1 $2" in
 		fi
 		;;
     'run view') ;;
+    'extension upgrade') echo "$*" ;;
     'release view') echo 'https://github.com/owner/project/releases/tag/v0.2.0' ;;
     *) echo "unexpected gh invocation: $*" >&2; exit 1 ;;
 esac
@@ -117,6 +118,19 @@ if git -C "$repo" show-ref --verify --quiet refs/heads/dev/v0.2.0; then
 fi
 if git -C "$repo" ls-remote --exit-code --heads origin refs/heads/dev/v0.2.0 >/dev/null; then
 	echo 'remote dev/v0.2.0 branch still exists' >&2
+	exit 1
+fi
+
+[[ $(PATH="$bin:$PATH" "$script_dir/gh-release-flow" upgrade) == 'extension upgrade release-flow' ]]
+if PATH="$bin:$PATH" "$script_dir/gh-release-flow" upgrade extra >/dev/null 2>&1; then
+	echo 'upgrade accepted an argument' >&2
+	exit 1
+fi
+
+[[ $("$script_dir/gh-release-flow" version) == 'gh-release-flow v'* ]]
+[[ $("$script_dir/gh-release-flow" --version) == 'gh-release-flow v'* ]]
+if "$script_dir/gh-release-flow" version extra >/dev/null 2>&1; then
+	echo 'version accepted an argument' >&2
 	exit 1
 fi
 
