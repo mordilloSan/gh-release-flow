@@ -80,8 +80,7 @@ The command:
 
 1. Refuses to run when tracked files have staged or unstaged changes.
 2. Fetches `origin`, then reads the version from the argument, then `VERSION`,
-   or prompts for it. The prompt suggests the next minor version after the
-   latest `v*` tag on the base branch; press Enter to accept it.
+   or prompts for it, first showing the latest `v*` tag on the base branch.
 3. Normalizes an uppercase `V` prefix to lowercase.
 4. Validates the version and resulting `dev/<version>` Git branch name.
 5. Checks out the base branch and fast-forward pulls it.
@@ -244,7 +243,7 @@ commands above; these internal functions implement that interface.
 | `require_gh` | Verifies that GitHub CLI is available. |
 | `push_repo_owner` | Resolves the owner of the release branch's push repository. |
 | `find_pr` | Finds a branch PR owned by that push repository. |
-| `next_version` | Suggests the next minor version after the latest base-branch tag. |
+| `latest_tag` | Prints the latest `v*` tag on the fetched base branch. |
 | `read_version` | Reads, normalizes, and validates a version, then derives its release branch. |
 | `read_release_branch` | Validates the current branch and extracts its version. |
 | `previous_tag` | Finds the nearest reachable release tag. |
