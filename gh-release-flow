@@ -40,10 +40,20 @@ find_pr() {
 		--jq "map(select(.headRepositoryOwner.login == \"$owner\")) | .[0].number // empty"
 }
 
+# Suggest the next minor version after the latest tag on the fetched base branch.
+next_version() {
+	local latest
+	latest=$(git describe --tags --abbrev=0 --match 'v*' "origin/$DEFAULT_BASE_BRANCH" 2>/dev/null) || return 0
+	[[ $latest =~ ^v([0-9]+)\.([0-9]+)\. ]] || return 0
+	echo "v${BASH_REMATCH[1]}.$((10#${BASH_REMATCH[2]} + 1)).0"
+}
+
 read_version() {
-	local candidate=${1:-${VERSION:-}}
+	local candidate=${1:-${VERSION:-}} suggested
 	if [[ -z $candidate ]]; then
-		read -r -p 'Enter version (e.g. v1.2.3): ' candidate
+		suggested=$(next_version)
+		read -r -p "Enter version ${suggested:+[$suggested] }(e.g. v1.2.3): " candidate
+		candidate=${candidate:-$suggested}
 	fi
 	VERSION=${candidate/#V/v}
 	[[ $VERSION =~ $version_re ]] ||
@@ -154,8 +164,8 @@ generate_pr_body() {
 start_dev() {
 	require_clean
 	require_gh
-	read_version "${1:-}"
 	git fetch origin
+	read_version "${1:-}"
 	git checkout "$DEFAULT_BASE_BRANCH"
 	git pull --ff-only
 	if git show-ref --verify --quiet "refs/heads/$REL_BRANCH"; then

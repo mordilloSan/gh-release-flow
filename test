@@ -129,4 +129,12 @@ for invalid_version in v1.2.3-.. v1.2.3-foo.; do
 		exit 1
 	fi
 done
+# origin/main holds v0.1.0; the unreachable v9.0.0 must not be suggested.
+(
+	cd "$repo"
+	[[ $(next_version) == v0.2.0 ]]
+	VERSION=''
+	read_version <<<''
+	[[ $VERSION == v0.2.0 ]]
+)
 echo 'tests passed'
