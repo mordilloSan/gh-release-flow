@@ -5,6 +5,7 @@ DEFAULT_BASE_BRANCH=${DEFAULT_BASE_BRANCH:-main}
 RELEASE_WORKFLOW=${RELEASE_WORKFLOW:-release.yml}
 REPO=${REPO:-}
 CONFIRM=${CONFIRM:-1}
+TOOL_VERSION=v1.3.0 # bump on each release; VERSION is the release being cut
 PR=${PR:-}
 repo_args=()
 [[ -n $REPO ]] && repo_args=(--repo "$REPO")
@@ -471,6 +472,7 @@ Usage:
   gh release-flow start-dev [version]
   gh release-flow open-pr
   gh release-flow merge
+  gh release-flow version
 EOF
 }
 
@@ -489,6 +491,10 @@ main() {
 	merge | merge-release)
 		(($# == 0)) || die 'merge accepts no arguments.'
 		merge_release
+		;;
+	version | --version)
+		(($# == 0)) || die 'version accepts no arguments.'
+		echo "gh-release-flow $TOOL_VERSION"
 		;;
 	-h | --help | help | '') usage ;;
 	*)

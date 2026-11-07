@@ -120,6 +120,13 @@ if git -C "$repo" ls-remote --exit-code --heads origin refs/heads/dev/v0.2.0 >/d
 	exit 1
 fi
 
+[[ $("$script_dir/gh-release-flow" version) == 'gh-release-flow v'* ]]
+[[ $("$script_dir/gh-release-flow" --version) == 'gh-release-flow v'* ]]
+if "$script_dir/gh-release-flow" version extra >/dev/null 2>&1; then
+	echo 'version accepted an argument' >&2
+	exit 1
+fi
+
 source "$script_dir/gh-release-flow"
 read_version V1.2.3
 [[ $VERSION == v1.2.3 && $REL_BRANCH == dev/v1.2.3 ]]

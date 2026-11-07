@@ -42,10 +42,11 @@ Upgrade an existing installation with:
 gh extension upgrade release-flow
 ```
 
-Display the available commands with:
+Display the available commands and the installed version with:
 
 ```bash
 gh release-flow --help
+gh release-flow version
 ```
 
 ## Quick start
@@ -161,6 +162,28 @@ cleanup. If the workflow fails, cannot be identified, or is interrupted, the
 release branch is kept for debugging and the command can be run again.
 
 `merge-release` is an alias for `merge`.
+
+### `version`
+
+Prints the installed extension version. `--version` is an alias.
+
+```console
+$ gh release-flow version
+gh-release-flow v1.3.0
+```
+
+### `help`
+
+Prints command-line usage. `--help` and `-h` are aliases.
+
+```console
+$ gh release-flow help
+Usage:
+  gh release-flow start-dev [version]
+  gh release-flow open-pr
+  gh release-flow merge
+  gh release-flow version
+```
 
 ## Generated changelog
 
