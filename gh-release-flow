@@ -472,7 +472,9 @@ Usage:
   gh release-flow start-dev [version]
   gh release-flow open-pr
   gh release-flow merge
+  gh release-flow upgrade
   gh release-flow version
+  gh release-flow help
 EOF
 }
 
@@ -491,6 +493,11 @@ main() {
 	merge | merge-release)
 		(($# == 0)) || die 'merge accepts no arguments.'
 		merge_release
+		;;
+	upgrade)
+		(($# == 0)) || die 'upgrade accepts no arguments.'
+		# exec: the upgrade rewrites this file, so bash must not keep reading it.
+		exec gh extension upgrade release-flow
 		;;
 	version | --version)
 		(($# == 0)) || die 'version accepts no arguments.'
