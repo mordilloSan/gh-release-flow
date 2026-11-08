@@ -5,7 +5,7 @@ DEFAULT_BASE_BRANCH=${DEFAULT_BASE_BRANCH:-main}
 RELEASE_WORKFLOW=${RELEASE_WORKFLOW:-release.yml}
 REPO=${REPO:-}
 CONFIRM=${CONFIRM:-1}
-TOOL_VERSION=v1.3.0 # bump on each release; VERSION is the release being cut
+TOOL_VERSION=v1.4.0 # bump on each release; VERSION is the release being cut
 PR=${PR:-}
 [[ -z $REPO ]] || export GH_REPO=$REPO
 export GH_PAGER=cat
@@ -33,10 +33,17 @@ require_gh() {
 		die 'GitHub CLI (gh) not found. Install it from https://cli.github.com/'
 }
 
-push_repo_owner() {
+# Sets PUSH_REPO (host/owner/name) for a remote and points gh at it, unless REPO chose a repository.
+use_push_repo() {
 	local remote_url
-	remote_url=$(git remote get-url "$1") || return 1
-	gh repo view "$remote_url" --json nameWithOwner --jq '.nameWithOwner | split("/")[0]'
+	if ! remote_url=$(git remote get-url "$1") ||
+		! PUSH_REPO=$(gh repo view "$remote_url" --json url --jq '.url | sub("^https?://"; "")'); then
+		die "Unable to identify the GitHub repository behind remote '$1'."
+	fi
+	if [[ -z $REPO ]]; then
+		export GH_REPO=$PUSH_REPO
+		echo "==> Using GitHub repository $PUSH_REPO"
+	fi
 }
 
 find_pr() {
@@ -47,7 +54,7 @@ find_pr() {
 }
 
 latest_tag() {
-	git describe --tags --abbrev=0 --match 'v*' "origin/$DEFAULT_BASE_BRANCH" 2>/dev/null || true
+	git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' "origin/$DEFAULT_BASE_BRANCH" 2>/dev/null || true
 }
 
 read_version() {
@@ -73,15 +80,15 @@ read_release_branch() {
 }
 
 previous_tag() {
-	git describe --tags --abbrev=0 --match 'v*' --exclude "$1" HEAD 2>/dev/null || true
+	git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude "$1" HEAD 2>/dev/null || true
 }
 
 generate_changelog() {
 	local version=$1 previous=$2 commit_range=$3 repo=$4
 	local features='' fixes='' docs='' style='' refactor='' perf=''
 	local tests='' build='' ci='' chore='' other=''
-	local message hash author entry
-	local -a log_args=(--no-show-signature --reverse --no-merges --pretty=format:'%s%x00%h%x00%an%x00')
+	local message hash author entry contributors=''
+	local -a log_args=(--no-show-signature --reverse --no-merges --pretty=format:'%s%x00%h%x00%aN%x00')
 	[[ -n $commit_range ]] && log_args+=("$commit_range")
 
 	while IFS= read -r -d '' message &&
@@ -92,26 +99,27 @@ generate_changelog() {
 		[[ $author != 'github-actions[bot]' ]] || continue
 		[[ ! $message =~ ^[Cc]hangelog$ ]] || continue
 
+		contributors+="* $author"$'\n'
 		entry="* $message ([${hash:0:7}](https://github.com/$repo/commit/$hash)) by $author"
-		if [[ $message =~ ^feat(\(.*\))?: ]]; then
+		if [[ $message =~ ^feat(\(.*\))?!?: ]]; then
 			features+="$entry"$'\n'
-		elif [[ $message =~ ^fix(\(.*\))?: ]]; then
+		elif [[ $message =~ ^fix(\(.*\))?!?: ]]; then
 			fixes+="$entry"$'\n'
-		elif [[ $message =~ ^docs(\(.*\))?: ]]; then
+		elif [[ $message =~ ^docs(\(.*\))?!?: ]]; then
 			docs+="$entry"$'\n'
-		elif [[ $message =~ ^style(\(.*\))?: ]]; then
+		elif [[ $message =~ ^style(\(.*\))?!?: ]]; then
 			style+="$entry"$'\n'
-		elif [[ $message =~ ^refactor(\(.*\))?: ]]; then
+		elif [[ $message =~ ^refactor(\(.*\))?!?: ]]; then
 			refactor+="$entry"$'\n'
-		elif [[ $message =~ ^perf(\(.*\))?: ]]; then
+		elif [[ $message =~ ^perf(\(.*\))?!?: ]]; then
 			perf+="$entry"$'\n'
-		elif [[ $message =~ ^test(\(.*\))?: ]]; then
+		elif [[ $message =~ ^test(\(.*\))?!?: ]]; then
 			tests+="$entry"$'\n'
-		elif [[ $message =~ ^build(\(.*\))?: ]]; then
+		elif [[ $message =~ ^build(\(.*\))?!?: ]]; then
 			build+="$entry"$'\n'
-		elif [[ $message =~ ^ci(\(.*\))?: ]]; then
+		elif [[ $message =~ ^ci(\(.*\))?!?: ]]; then
 			ci+="$entry"$'\n'
-		elif [[ $message =~ ^chore(\(.*\))?: ]]; then
+		elif [[ $message =~ ^chore(\(.*\))?!?: ]]; then
 			chore+="$entry"$'\n'
 		else
 			other+="$entry"$'\n'
@@ -131,11 +139,7 @@ generate_changelog() {
 	[[ -z $other ]] || printf '###  Other Changes\n\n%s\n' "$other"
 
 	printf '###  Contributors\n\n'
-	if [[ -n $commit_range ]]; then
-		git log --no-show-signature --no-merges "$commit_range" --pretty=format:'* %an' | sort -u
-	else
-		git log --no-show-signature --no-merges --pretty=format:'* %an' | sort -u
-	fi
+	printf '%s' "$contributors" | sort -u
 	if [[ -n $previous ]]; then
 		printf '\n\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
 			"$repo" "$previous" "$version"
@@ -146,12 +150,7 @@ generate_changelog() {
 }
 
 generate_pr_body() {
-	local repo_name previous commit_range
-	repo_name=${REPO:-${GITHUB_REPOSITORY:-}}
-	if [[ -z $repo_name ]]; then
-		repo_name=$(git remote get-url origin 2>/dev/null |
-			sed -E 's#.*github\.com[:/]##; s#\.git$##')
-	fi
+	local repo_name=${REPO:-${GITHUB_REPOSITORY:-${PUSH_REPO#*/}}} previous commit_range
 	previous=$(previous_tag "$VERSION")
 	commit_range=''
 	[[ -z $previous ]] || commit_range=$previous..HEAD
@@ -175,6 +174,9 @@ start_dev() {
 	read_version "${1:-}"
 	if git show-ref --verify --quiet refs/heads/dev || git show-ref --verify --quiet refs/remotes/origin/dev; then
 		die "A branch named 'dev' exists, so Git cannot create $REL_BRANCH. Rename or delete 'dev' first."
+	fi
+	if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null; then
+		die "Tag $VERSION already exists on origin. Pick a new version."
 	fi
 	if ((moving == 1)); then
 		echo "==> Uncommitted changes on $DEFAULT_BASE_BRANCH:"
@@ -203,7 +205,7 @@ start_dev() {
 }
 
 open_pr() {
-	local push_remote push_owner remote_ref remote_info behind ahead pushed=0
+	local push_remote push_owner remote_ref remote_info behind ahead
 	local prnum check_output check_status start_time total_time pr_url i
 	local open_pr_status=0
 	require_clean
@@ -212,8 +214,8 @@ open_pr() {
 	trap 'rm -f "${PR_BODY_FILE:-}"' EXIT
 
 	push_remote=$(git config --get "branch.$BRANCH.remote" 2>/dev/null || echo origin)
-	push_owner=$(push_repo_owner "$push_remote") ||
-		die "Unable to identify the GitHub repository behind remote '$push_remote'."
+	use_push_repo "$push_remote"
+	IFS=/ read -r _ push_owner _ <<<"$PUSH_REPO"
 	remote_ref=refs/remotes/$push_remote/$BRANCH
 	if ! remote_info=$(git ls-remote --heads "$push_remote" "refs/heads/$BRANCH"); then
 		die "Unable to query $push_remote/$BRANCH; refusing to use a stale tracking ref."
@@ -221,7 +223,6 @@ open_pr() {
 	if [[ -z $remote_info ]]; then
 		echo "==> $push_remote/$BRANCH does not exist yet - publishing…"
 		git push --no-follow-tags -u "$push_remote" "HEAD:refs/heads/$BRANCH"
-		pushed=1
 	else
 		git fetch --quiet "$push_remote" "+refs/heads/$BRANCH:$remote_ref" ||
 			die "Unable to fetch $push_remote/$BRANCH; refusing to use a stale tracking ref."
@@ -234,7 +235,6 @@ open_pr() {
 		if ((ahead > 0)); then
 			echo "==> Publishing $ahead local commit(s) to $push_remote/$BRANCH…"
 			git push --no-follow-tags "$push_remote" "HEAD:refs/heads/$BRANCH"
-			pushed=1
 		else
 			echo "==> $BRANCH already in sync with $push_remote/$BRANCH - nothing to push."
 		fi
@@ -242,17 +242,14 @@ open_pr() {
 
 	prnum=$(find_pr open "$push_owner") ||
 		die "Unable to query open PRs for $BRANCH."
+	generate_pr_body
 	if [[ -n $prnum ]]; then
 		echo "==> An open PR (#$prnum) from $BRANCH -> $DEFAULT_BASE_BRANCH already exists."
-		if ((pushed == 1)); then
-			echo '==> Refreshing PR body with the latest changelog…'
-			generate_pr_body
-			gh pr edit "$prnum" --body-file "$PR_BODY_FILE"
-			echo 'OK: PR body updated.'
-		fi
+		echo '==> Refreshing PR body with the latest changelog…'
+		gh pr edit "$prnum" --body-file "$PR_BODY_FILE"
+		echo 'OK: PR body updated.'
 	else
 		echo "==> Opening PR: $BRANCH -> $DEFAULT_BASE_BRANCH…"
-		generate_pr_body
 		gh pr create --base "$DEFAULT_BASE_BRANCH" --head "$BRANCH" \
 			--title "Release $VERSION" --body-file "$PR_BODY_FILE"
 		prnum=$(find_pr open "$push_owner")
@@ -270,7 +267,7 @@ open_pr() {
 		}
 	done
 	if grep -q 'no checks reported' <<<"$check_output"; then
-		echo 'WARN: No CI checks detected after 15s. Skipping check wait.'
+		echo 'WARN: No CI checks detected after 11s. Skipping check wait.'
 		echo '    Checks might start later - monitor the PR manually.'
 	else
 		echo "==> Waiting for checks to complete on PR #$prnum…"
@@ -317,8 +314,8 @@ merge_release() {
 		die 'Update gh to 2.40 or newer: this flow needs gh run list --commit.'
 	read_release_branch
 	push_remote=$(git config --get "branch.$BRANCH.remote" 2>/dev/null || echo origin)
-	push_owner=$(push_repo_owner "$push_remote") ||
-		die "Unable to identify the GitHub repository behind remote '$push_remote'."
+	use_push_repo "$push_remote"
+	IFS=/ read -r _ push_owner _ <<<"$PUSH_REPO"
 
 	if [[ -n $PR ]]; then
 		prnum=$PR

@@ -40,8 +40,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           release_args=()
           [[ "$RELEASE_TAG" == *-* ]] && release_args+=(--prerelease)
-          gh release create "$RELEASE_TAG" gh-release-flow --target "$MERGE_SHA" --generate-notes "${release_args[@]}"
+          # The release PR body holds the grouped changelog written by open-pr.
+          if [[ -n $PR_BODY ]]; then release_args+=(--notes "$PR_BODY"); else release_args+=(--generate-notes); fi
+          gh release create "$RELEASE_TAG" gh-release-flow --target "$MERGE_SHA" "${release_args[@]}"
 

@@ -29,14 +29,22 @@ git -C "$repo" remote add origin "$origin"
 git -C "$repo" push -qu origin main
 git -C "$repo" checkout -qb dev/v0.2.0
 git -C "$repo" commit --allow-empty -qm 'fix: preserve | pipe and \backslash'
+printf 'John Smith <tester@example.com>\n' >"$repo/.mailmap"
+git -C "$repo" add .mailmap
+git -C "$repo" -c user.name='J. Smith' commit -qm 'chore: map author names'
+git -C "$repo" commit --allow-empty -qm 'chore: bot work' --author='github-actions[bot] <bot@example.com>'
 
 cat >"$bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 args=" $* "
 case "$1 $2" in
-'repo view') echo owner ;;
+'repo view') echo 'github.com/owner/project' ;;
 'pr list')
+	if [[ ${GH_REPO:-} != github.com/owner/project ]]; then
+		echo "fake gh: pr list targets '${GH_REPO:-}', not the push repository" >&2
+		exit 1
+	fi
 	if [[ $args != *'number,headRepositoryOwner'* || $args != *'headRepositoryOwner.login'* ]]; then
 		echo 'fake gh: pr list was called without the owner filter' >&2
 		exit 1
@@ -139,6 +147,11 @@ grep -Fq '###  Bug Fixes' "$body"
 grep -Fq 'fix: preserve | pipe and \backslash' "$body"
 grep -Fq 'by John Smith' "$body"
 grep -Fq '* John Smith' "$body"
+grep -Fq 'https://github.com/owner/project/commit/' "$body"
+if grep -Fq 'J. Smith' "$body" || grep -Fq 'github-actions[bot]' "$body"; then
+	echo 'a mapped or filtered author was credited' >&2
+	exit 1
+fi
 if grep -Fq '@John Smith' "$body"; then
 	echo 'author name was converted to a GitHub mention' >&2
 	exit 1
@@ -152,6 +165,7 @@ git -C "$repo" ls-remote --exit-code --heads origin refs/heads/dev/v0.2.0 >/dev/
 
 # Pushing to an existing PR refreshes its body, with each commit in its group.
 git -C "$repo" commit --allow-empty -qm 'feat(api): add widget'
+git -C "$repo" commit --allow-empty -qm 'feat!: drop old option'
 git -C "$repo" commit --allow-empty -qm 'docs: explain widget'
 git -C "$repo" commit --allow-empty -qm 'Tidy things'
 : >"$body"
@@ -159,7 +173,13 @@ flow open-pr >/dev/null
 body_text=$(<"$body")
 [[ $body_text == *$'###  Features\n\n* feat(api): add widget'* ]]
 [[ $body_text == *$'###  Documentation\n\n* docs: explain widget'* ]]
+[[ $body_text == *$'by John Smith\n* feat!: drop old option'* ]]
 [[ $body_text == *$'###  Other Changes\n\n* Tidy things'* ]]
+git -C "$repo" commit --allow-empty -qm 'perf: pushed with plain git'
+git -C "$repo" push -q
+: >"$body"
+flow open-pr >/dev/null
+grep -Fq 'perf: pushed with plain git' "$body"
 
 # open-pr refuses a branch that is behind or has diverged from the remote.
 git -C "$repo" commit --allow-empty -qm 'chore: remote only'
@@ -202,6 +222,8 @@ git -C "$repo" branch -q -D dev/v0.3.0
 flow start-dev v0.3.0 >/dev/null
 [[ $(git -C "$repo" rev-parse HEAD) == "$release_head" ]]
 [[ $(git -C "$repo" rev-parse --abbrev-ref '@{u}') == origin/dev/v0.3.0 ]]
+git -C "$repo" push -q origin v0.1.0
+fails_with 'Tag v0.1.0 already exists' flow start-dev v0.1.0
 git clone -q -b main "$origin" "$test_root/clone"
 git -C "$test_root/clone" branch dev
 (cd "$test_root/clone" && fails_with "A branch named 'dev' exists" "$script_dir/gh-release-flow" start-dev v0.4.0)
@@ -278,15 +300,15 @@ for invalid_version in v1.2.3-.. v1.2.3-foo.; do
 done
 (
 	cd "$repo"
-	# origin/main holds v0.1.0; the unreachable v9.0.0 must not be shown.
+	# origin/main holds v0.1.0; the unreachable v9.0.0 and the non-release v1 must not be shown.
+	git tag v1 origin/main
 	VERSION=''
 	[[ $(read_version <<<'v0.2.0') == '==> Latest release: v0.1.0' ]]
-	# Changelog links use REPO, else the owner/name in the origin URL.
-	git remote set-url origin git@github.com:acme/widget.git
-	VERSION=v0.4.0 generate_pr_body
+	# Changelog links use REPO, else the push repository.
+	PUSH_REPO=github.com/acme/widget VERSION=v0.4.0 generate_pr_body
 	grep -Fq 'https://github.com/acme/widget/commit/' "$PR_BODY_FILE"
 	rm -f "$PR_BODY_FILE"
-	VERSION=v0.4.0 REPO=acme/other generate_pr_body
+	PUSH_REPO=github.com/acme/widget VERSION=v0.4.0 REPO=acme/other generate_pr_body
 	grep -Fq 'https://github.com/acme/other/compare/v0.1.0...v0.4.0' "$PR_BODY_FILE"
 	rm -f "$PR_BODY_FILE"
 )

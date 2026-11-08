@@ -91,10 +91,11 @@ The command:
    asks whether to move them to the release branch. Pressing Enter, or running
    without a terminal, refuses as before.
 2. Fetches `origin`, then reads the version from the argument, then `VERSION`,
-   or prompts for it, first showing the latest `v*` tag on the base branch.
+   or prompts for it, first showing the latest release tag on the base branch.
 3. Normalizes an uppercase `V` prefix to lowercase.
-4. Validates the version and resulting `dev/<version>` Git branch name, and
-   refuses to continue if a `dev` branch exists.
+4. Validates the version and resulting `dev/<version>` Git branch name. It
+   refuses to continue if a `dev` branch exists, or if the version's tag
+   already exists on `origin`.
 5. Checks out the base branch and fast-forward pulls it.
 6. Checks out an existing local release branch, checks out one that exists only
    on `origin`, or creates and publishes a new one.
@@ -116,7 +117,8 @@ The command:
 1. Verifies the current branch is a valid `dev/v*` release branch and the
    tracked working tree is clean.
 2. Uses the remote the branch tracks (`branch.<name>.remote`), falling back
-   to `origin`.
+   to `origin`. Unless `REPO` is set, GitHub CLI uses that remote's repository,
+   and the command prints its name.
 3. Publishes a missing remote branch or pushes local commits when the local
    branch is strictly ahead.
 4. Refuses to continue if the local branch is behind or has diverged from the
@@ -128,8 +130,8 @@ The command:
 8. Prints the PR URL and exits unsuccessfully if checks fail or are still
    pending when monitoring ends.
 
-If an existing PR receives newly pushed commits, its generated body is
-refreshed. If GitHub reports no checks after the registration retries, the
+Every run regenerates the PR body, so an existing PR always shows the current
+changelog. Text edited into the body by hand is replaced. If GitHub reports no checks after the registration retries, the
 command warns and returns without watching; `merge` will still require checks
 before it can merge the PR.
 
@@ -214,7 +216,8 @@ Usage:
 ## Generated changelog
 
 `open-pr` builds the pull request body from Git history. It selects the nearest
-reachable `v*` tag other than the current version and includes non-merge commits
+reachable release tag, shaped like `v1.2.3` or `v1.2.3-rc.1`, other than the
+current version, and includes non-merge commits
 from that tag through `HEAD`. With no previous tag, it uses the full history.
 
 Conventional Commit prefixes are grouped as follows:
@@ -233,14 +236,17 @@ Conventional Commit prefixes are grouped as follows:
 | `chore` | Chores |
 | anything else | Other Changes |
 
-Scoped prefixes such as `feat(api):` are supported. Each entry includes the
-subject, linked short commit hash, and author name as plain text. Merge commits,
-commits authored by `github-actions[bot]`, and commits whose subject is
-`changelog` are omitted. The body ends with unique contributors and a
-full-changelog link.
+Scoped prefixes such as `feat(api):` are supported, and so is the
+breaking-change marker, as in `feat!:`. Each entry includes the subject, linked
+short commit hash, and author name as plain text. Author names follow the
+repository's `.mailmap`. Merge commits, commits authored by
+`github-actions[bot]`, and commits whose subject is `changelog` are omitted,
+both from the entries and from the contributors. The body ends with unique
+contributors and a full-changelog link.
 
 The repository used in commit links is resolved from `REPO`, then
-`GITHUB_REPOSITORY`, then the `origin` URL. Links always point at github.com.
+`GITHUB_REPOSITORY`, then the repository the branch is pushed to. Links always
+point at github.com.
 
 ## Configuration
 
@@ -251,10 +257,10 @@ All configuration is provided through environment variables.
 | `DEFAULT_BASE_BRANCH` | `main` | all commands | Branch from which releases start and into which release PRs merge. |
 | `RELEASE_WORKFLOW` | `release.yml` | `merge` | Workflow file or name passed to `gh run list --workflow`. |
 | `VERSION` | prompt (shows the latest release tag) | `start-dev` | Version used when no command argument is provided. |
-| `REPO` | current repository | `open-pr`, `merge` | Repository targeted by GitHub CLI, exported as `GH_REPO`; also used for changelog links. |
+| `REPO` | repository the branch is pushed to | `open-pr`, `merge` | Repository targeted by GitHub CLI, exported as `GH_REPO`; also used for changelog links. |
 | `PR` | auto-detected | `merge` | Specific PR number to validate and merge. |
 | `CONFIRM` | `1` | `merge` | Set to `0` to skip the merge confirmation prompt. |
-| `GITHUB_REPOSITORY` | derived from `origin` | `open-pr` | Fallback `owner/repo` used only for generated changelog links. |
+| `GITHUB_REPOSITORY` | repository the branch is pushed to | `open-pr` | Fallback `owner/repo` used only for generated changelog links. |
 
 Examples:
 
@@ -294,9 +300,9 @@ commands above; these internal functions implement that interface.
 | `tree_dirty` | Reports staged or unstaged tracked-file changes. |
 | `require_clean` | Rejects running outside a Git working tree and staged or unstaged tracked-file changes. |
 | `require_gh` | Verifies that GitHub CLI is available. |
-| `push_repo_owner` | Resolves the owner of the release branch's push repository. |
+| `use_push_repo` | Resolves the release branch's push repository and points GitHub CLI at it unless `REPO` is set. |
 | `find_pr` | Finds a branch PR owned by that push repository. |
-| `latest_tag` | Prints the latest `v*` tag on the fetched base branch. |
+| `latest_tag` | Prints the latest release tag on the fetched base branch. |
 | `read_version` | Reads, normalizes, and validates a version, then derives its release branch. |
 | `read_release_branch` | Validates the current branch and extracts its version. |
 | `previous_tag` | Finds the nearest reachable release tag. |
