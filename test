@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Ignore the caller's Git and tool settings: a hook's GIT_DIR would point every git call at the real repo.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE REPO PR VERSION CONFIRM DEFAULT_BASE_BRANCH RELEASE_WORKFLOW GITHUB_REPOSITORY
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 
+exec </dev/null # prompts see a closed stdin unless a step feeds an answer
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 test_root=$(mktemp -d /tmp/gh-release-flow.XXXXXX)
 trap 'rm -rf -- "$test_root"' EXIT
 repo=$test_root/repo
 origin=$test_root/origin.git
 bin=$test_root/bin
+state=$test_root/gh-state
+body=$test_root/pr-body
+merge_log=$test_root/gh-merge
 mkdir -p "$repo" "$bin"
 
 git -C "$repo" init -q
@@ -22,55 +29,83 @@ git -C "$repo" remote add origin "$origin"
 git -C "$repo" push -qu origin main
 git -C "$repo" checkout -qb dev/v0.2.0
 git -C "$repo" commit --allow-empty -qm 'fix: preserve | pipe and \backslash'
+printf 'John Smith <tester@example.com>\n' >"$repo/.mailmap"
+git -C "$repo" add .mailmap
+git -C "$repo" -c user.name='J. Smith' commit -qm 'chore: map author names'
+git -C "$repo" commit --allow-empty -qm 'chore: bot work' --author='github-actions[bot] <bot@example.com>'
 
 cat >"$bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 args=" $* "
 case "$1 $2" in
-	'repo view') echo owner ;;
-	'pr list')
-		if [[ $args != *'number,headRepositoryOwner'* || $args != *'headRepositoryOwner.login'* ]]; then
-			echo 666
-			exit
-		fi
-		if [[ $args == *' --state merged '* && ${GH_MERGED:-0} == 1 ]]; then
-			echo 17
-        elif [[ $args == *' --state open '* && ${GH_MERGED:-0} != 1 && -f $GH_STATE ]]; then
-            echo 17
-        fi
-        ;;
-    'pr create')
-        while (($#)); do
-            [[ $1 != --body-file ]] || { shift; cp "$1" "$GH_BODY"; break; }
-            shift
-        done
-        : >"$GH_STATE"
-        ;;
-	'pr checks') echo 'no checks reported' ;;
-	'pr view')
-		[[ ${3:-} != 666 ]] || exit 1
-		if [[ $args == *' --json url '* ]]; then
-			echo 'https://github.com/owner/project/pull/17'
-		elif [[ $args == *' baseRefName,headRefName,headRefOid,headRepositoryOwner '* ]]; then
-			printf 'main\tdev/v0.2.0\t%s\towner\n' "$(git rev-parse dev/v0.2.0)"
-		elif [[ $args == *' --json state '* ]]; then
-			echo MERGED
-		elif [[ $args == *' --json mergedAt '* ]]; then
-			echo '2026-01-02T00:00:00Z'
-		fi
-		;;
-	'run list')
-		if [[ $args == *' --created >=2026-01-02T00:00:00Z '* ]]; then
-			printf '99\tcompleted\tsuccess\t2026-01-02T00:00:01Z\tdev/v0.2.0\tpull_request\tRelease v0.2.0\n'
-		else
-			printf '98\tcompleted\tfailure\t2026-01-01T00:00:00Z\tdev/v0.2.0\tpull_request\tOld release run\n'
-		fi
-		;;
-    'run view') ;;
-    'extension upgrade') echo "$*" ;;
-    'release view') echo 'https://github.com/owner/project/releases/tag/v0.2.0' ;;
-    *) echo "unexpected gh invocation: $*" >&2; exit 1 ;;
+'repo view') echo 'github.com/owner/project' ;;
+'pr list')
+	if [[ ${GH_REPO:-} != github.com/owner/project ]]; then
+		echo "fake gh: pr list targets '${GH_REPO:-}', not the push repository" >&2
+		exit 1
+	fi
+	if [[ $args != *'number,headRepositoryOwner'* || $args != *'headRepositoryOwner.login'* ]]; then
+		echo 'fake gh: pr list was called without the owner filter' >&2
+		exit 1
+	fi
+	if [[ $args == *' --state merged '* && ${GH_MERGED:-0} == 1 ]]; then
+		echo 17
+	elif [[ $args == *' --state open '* && ${GH_MERGED:-0} != 1 && -f $GH_STATE ]]; then
+		echo 17
+	fi
+	;;
+'pr create' | 'pr edit')
+	while (($#)); do
+		[[ $1 != --body-file ]] || {
+			shift
+			cp "$1" "$GH_BODY"
+			break
+		}
+		shift
+	done
+	: >"$GH_STATE"
+	;;
+'pr checks')
+	if [[ ${GH_CHECKS:-} == pass ]]; then
+		echo 'All checks were successful'
+	else
+		echo 'no checks reported on the branch' >&2
+		exit 1
+	fi
+	;;
+'pr view')
+	if [[ $args == *' --json url '* ]]; then
+		echo 'https://github.com/owner/project/pull/17'
+	elif [[ $args == *'headRefOid'* ]]; then
+		printf 'main\t%s\t%s\towner\t%s\n' "$(git branch --show-current)" \
+			"${GH_PR_OID:-$(git rev-parse HEAD)}" "${GH_CROSS:-false}"
+	elif [[ $args == *' --json state '* ]]; then
+		echo MERGED
+	elif [[ $args == *' --json mergedAt '* ]]; then
+		echo '2026-01-02T00:00:00Z'
+	fi
+	;;
+'pr merge')
+	echo "$*" >>"$GH_MERGE_LOG"
+	git push -q origin HEAD:refs/heads/main # what GitHub does on merge
+	;;
+'run list')
+	if [[ $args == *' --help '* ]]; then
+		echo '  -c, --commit SHA'
+	elif [[ $args == *' --created >=2026-01-02T00:00:00Z '* ]]; then
+		printf '99\tcompleted\tsuccess\n'
+	else
+		printf '98\tcompleted\tfailure\n'
+	fi
+	;;
+'run view') ;;
+'extension upgrade') echo "$*" ;;
+'release view') echo 'https://github.com/owner/project/releases/tag/v0.2.0' ;;
+*)
+	echo "unexpected gh invocation: $*" >&2
+	exit 1
+	;;
 esac
 EOF
 cat >"$bin/sleep" <<'EOF'
@@ -79,18 +114,44 @@ exit 0
 EOF
 chmod +x "$bin/gh" "$bin/sleep"
 
-state=$test_root/gh-state
-body=$test_root/pr-body
-(
-	cd "$repo"
-	PATH="$bin:$PATH" GH_STATE=$state GH_BODY=$body \
-		"$script_dir/gh-release-flow" open-pr >/dev/null
-)
+flow() {
+	(cd "$repo" && PATH="$bin:$PATH" GH_STATE=$state GH_BODY=$body GH_MERGE_LOG=$merge_log \
+		"$script_dir/gh-release-flow" "$@")
+}
+fails_with() {
+	local want=$1 out
+	shift
+	if out=$("$@" 2>&1); then
+		echo "expected a failure from: $*" >&2
+		exit 1
+	fi
+	[[ $out == *"$want"* ]] || {
+		printf 'expected "%s" from %s, got:\n%s\n' "$want" "$*" "$out" >&2
+		exit 1
+	}
+}
+branch_gone() {
+	if git -C "$repo" show-ref --verify --quiet "refs/heads/$1"; then
+		echo "local $1 branch still exists" >&2
+		exit 1
+	fi
+	if git -C "$repo" ls-remote --exit-code --heads origin "refs/heads/$1" >/dev/null; then
+		echo "remote $1 branch still exists" >&2
+		exit 1
+	fi
+}
+
+flow open-pr >/dev/null
 [[ -s $body ]]
 grep -Fq '###  Bug Fixes' "$body"
 grep -Fq 'fix: preserve | pipe and \backslash' "$body"
 grep -Fq 'by John Smith' "$body"
 grep -Fq '* John Smith' "$body"
+grep -Fq 'https://github.com/owner/project/commit/' "$body"
+if grep -Fq 'J. Smith' "$body" || grep -Fq 'github-actions[bot]' "$body"; then
+	echo 'a mapped or filtered author was credited' >&2
+	exit 1
+fi
 if grep -Fq '@John Smith' "$body"; then
 	echo 'author name was converted to a GitHub mention' >&2
 	exit 1
@@ -102,24 +163,118 @@ if grep -Fq '/compare/v9.0.0...v0.2.0' "$body"; then
 fi
 git -C "$repo" ls-remote --exit-code --heads origin refs/heads/dev/v0.2.0 >/dev/null
 
-git -C "$repo" checkout -q main
-git -C "$repo" merge -q --no-ff dev/v0.2.0 -m 'Merge release'
-git -C "$repo" push -q origin main
-git -C "$repo" checkout -q dev/v0.2.0
-(
-	cd "$repo"
-	PATH="$bin:$PATH" GH_STATE=$state GH_BODY=$body GH_MERGED=1 \
-		"$script_dir/gh-release-flow" merge >/dev/null
-)
+# Pushing to an existing PR refreshes its body, with each commit in its group.
+git -C "$repo" commit --allow-empty -qm 'feat(api): add widget'
+git -C "$repo" commit --allow-empty -qm 'feat!: drop old option'
+git -C "$repo" commit --allow-empty -qm 'docs: explain widget'
+git -C "$repo" commit --allow-empty -qm 'Tidy things'
+: >"$body"
+flow open-pr >/dev/null
+body_text=$(<"$body")
+[[ $body_text == *$'###  Features\n\n* feat(api): add widget'* ]]
+[[ $body_text == *$'###  Documentation\n\n* docs: explain widget'* ]]
+[[ $body_text == *$'by John Smith\n* feat!: drop old option'* ]]
+[[ $body_text == *$'###  Other Changes\n\n* Tidy things'* ]]
+git -C "$repo" commit --allow-empty -qm 'perf: pushed with plain git'
+git -C "$repo" push -q
+: >"$body"
+flow open-pr >/dev/null
+grep -Fq 'perf: pushed with plain git' "$body"
+
+# open-pr refuses a branch that is behind or has diverged from the remote.
+git -C "$repo" commit --allow-empty -qm 'chore: remote only'
+git -C "$repo" push -q origin HEAD:refs/heads/dev/v0.2.0
+git -C "$repo" reset -q --hard HEAD~1
+fails_with 'commit(s) behind' flow open-pr
+git -C "$repo" commit --allow-empty -qm 'chore: local only'
+fails_with 'has diverged' flow open-pr
+git -C "$repo" reset -q --hard origin/dev/v0.2.0
+
+# merge refuses unsynchronized, forked, unchecked and unconfirmed PRs.
+git -C "$repo" commit --allow-empty -qm 'chore: unpushed'
+GH_CHECKS=pass fails_with 'Local HEAD is not synchronized' flow merge
+git -C "$repo" reset -q --hard origin/dev/v0.2.0
+GH_CHECKS=pass GH_PR_OID=0000000000000000000000000000000000000000 \
+	fails_with 'is not synchronized with local' flow merge
+GH_CHECKS=pass GH_CROSS=true fails_with 'comes from a fork' flow merge
+fails_with 'No CI checks are reported' flow merge
+GH_CHECKS=pass fails_with 'Merge aborted.' flow merge
+if [[ -e $merge_log ]]; then
+	echo 'a refused merge still called gh pr merge' >&2
+	exit 1
+fi
+
+# merge pins the exact head commit, then cleans up.
+release_head=$(git -C "$repo" rev-parse HEAD)
+GH_CHECKS=pass CONFIRM=0 flow merge >/dev/null
+grep -Fq -- "--match-head-commit $release_head" "$merge_log"
 [[ $(git -C "$repo" branch --show-current) == main ]]
-if git -C "$repo" show-ref --verify --quiet refs/heads/dev/v0.2.0; then
-	echo 'local dev/v0.2.0 branch still exists' >&2
+branch_gone dev/v0.2.0
+
+# start-dev creates and publishes a release branch, and later reuses the remote copy.
+flow start-dev v0.3.0 >/dev/null
+[[ $(git -C "$repo" branch --show-current) == dev/v0.3.0 ]]
+git -C "$repo" commit --allow-empty -qm 'feat: three'
+git -C "$repo" push -q
+release_head=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" checkout -q main
+git -C "$repo" branch -q -D dev/v0.3.0
+flow start-dev v0.3.0 >/dev/null
+[[ $(git -C "$repo" rev-parse HEAD) == "$release_head" ]]
+[[ $(git -C "$repo" rev-parse --abbrev-ref '@{u}') == origin/dev/v0.3.0 ]]
+git -C "$repo" push -q origin v0.1.0
+fails_with 'Tag v0.1.0 already exists' flow start-dev v0.1.0
+git clone -q -b main "$origin" "$test_root/clone"
+git -C "$test_root/clone" branch dev
+(cd "$test_root/clone" && fails_with "A branch named 'dev' exists" "$script_dir/gh-release-flow" start-dev v0.4.0)
+
+# A resumed merge must not delete a commit pushed after the merge, even when GitHub already deleted the branch.
+git -C "$repo" checkout -q main
+git -C "$repo" merge -q --no-ff dev/v0.3.0 -m 'Merge release'
+git -C "$repo" push -q origin main
+git -C "$repo" checkout -q dev/v0.3.0
+git -C "$repo" commit --allow-empty -qm 'fix: after merge'
+git -C "$repo" push -q
+git --git-dir="$origin" update-ref -d refs/heads/dev/v0.3.0
+GH_MERGED=1 GH_PR_OID=$release_head fails_with 'Unable to delete local branch' flow merge
+git -C "$repo" show-ref --verify --quiet refs/heads/dev/v0.3.0
+git -C "$repo" checkout -q dev/v0.3.0
+git -C "$repo" reset -q --hard "$release_head"
+GH_MERGED=1 GH_PR_OID=$release_head flow merge >/dev/null
+[[ $(git -C "$repo" branch --show-current) == main ]]
+branch_gone dev/v0.3.0
+
+# start-dev offers to move uncommitted changes from main, and only from main.
+printf 'one\n' >"$repo/notes.txt"
+git -C "$repo" add notes.txt
+git -C "$repo" commit -qm 'docs: add notes'
+git -C "$repo" push -q origin main
+git -C "$repo" checkout -q -b scratch
+printf 'two\n' >"$repo/notes.txt"
+fails_with 'Working tree not clean' flow start-dev v0.4.0 <<<y
+git -C "$repo" checkout -q main
+fails_with 'Working tree not clean' flow start-dev v0.4.0
+[[ $(git -C "$repo" branch --show-current) == main && $(<"$repo/notes.txt") == two ]]
+if git -C "$repo" show-ref --quiet refs/heads/dev/v0.4.0 refs/remotes/origin/dev/v0.4.0; then
+	echo 'a declined move still created the release branch' >&2
 	exit 1
 fi
-if git -C "$repo" ls-remote --exit-code --heads origin refs/heads/dev/v0.2.0 >/dev/null; then
-	echo 'remote dev/v0.2.0 branch still exists' >&2
-	exit 1
-fi
+flow start-dev v0.4.0 <<<y >/dev/null
+[[ $(git -C "$repo" branch --show-current) == dev/v0.4.0 && $(<"$repo/notes.txt") == two ]]
+git -C "$repo" ls-remote --exit-code --heads origin refs/heads/dev/v0.4.0 >/dev/null
+# If main moved on the same file, Git refuses and the changes stay untouched on main.
+git -C "$repo" checkout -q main
+git -C "$test_root/clone" pull -q
+printf 'remote\n' >"$test_root/clone/notes.txt"
+git -C "$test_root/clone" -c user.name=Other -c user.email=other@example.com commit -qam 'docs: edit notes'
+git -C "$test_root/clone" push -q origin main
+fails_with 'would be overwritten' flow start-dev v0.5.0 <<<y
+[[ $(git -C "$repo" branch --show-current) == main && $(<"$repo/notes.txt") == two ]]
+git -C "$repo" checkout -q -- notes.txt
+git -C "$repo" pull -q --ff-only
+
+# The version prompt explains a closed stdin instead of exiting silently.
+fails_with 'VERSION must look like' flow start-dev
 
 [[ $(PATH="$bin:$PATH" "$script_dir/gh-release-flow" upgrade) == 'extension upgrade release-flow' ]]
 if PATH="$bin:$PATH" "$script_dir/gh-release-flow" upgrade extra >/dev/null 2>&1; then
@@ -143,10 +298,18 @@ for invalid_version in v1.2.3-.. v1.2.3-foo.; do
 		exit 1
 	fi
 done
-# origin/main holds v0.1.0; the unreachable v9.0.0 must not be shown.
 (
 	cd "$repo"
+	# origin/main holds v0.1.0; the unreachable v9.0.0 and the non-release v1 must not be shown.
+	git tag v1 origin/main
 	VERSION=''
 	[[ $(read_version <<<'v0.2.0') == '==> Latest release: v0.1.0' ]]
+	# Changelog links use REPO, else the push repository.
+	PUSH_REPO=github.com/acme/widget VERSION=v0.4.0 generate_pr_body
+	grep -Fq 'https://github.com/acme/widget/commit/' "$PR_BODY_FILE"
+	rm -f "$PR_BODY_FILE"
+	PUSH_REPO=github.com/acme/widget VERSION=v0.4.0 REPO=acme/other generate_pr_body
+	grep -Fq 'https://github.com/acme/other/compare/v0.1.0...v0.4.0' "$PR_BODY_FILE"
+	rm -f "$PR_BODY_FILE"
 )
 echo 'tests passed'

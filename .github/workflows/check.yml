@@ -23,3 +23,12 @@ jobs:
         run: make check
       - name: Test behavior
         run: ./test
+      - name: Check tool version matches release branch
+        if: startsWith(github.head_ref, 'dev/v')
+        run: |
+          expected="gh-release-flow ${GITHUB_HEAD_REF#dev/}"
+          actual=$(./gh-release-flow version)
+          if [[ $actual != "$expected" ]]; then
+            echo "::error file=gh-release-flow::Bump TOOL_VERSION: version prints '$actual', expected '$expected'."
+            exit 1
+          fi
