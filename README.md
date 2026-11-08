@@ -18,13 +18,17 @@ responsibility of your release workflow.
 ## Requirements
 
 - Bash and Git.
-- [GitHub CLI](https://cli.github.com/) installed and authenticated.
+- [GitHub CLI](https://cli.github.com/) 2.40 or newer, installed and
+  authenticated.
 - A Git repository with an `origin` remote and a `main` branch, unless you
   configure another base branch.
+- No branch named `dev`. Git cannot hold both `dev` and `dev/v1.2.3`.
+- Release branches pushed to the repository that receives the PR. `merge`
+  refuses PRs from forks, because their release workflow cannot publish.
+- Merge commits allowed on the base branch, and no merge queue. `merge` merges
+  the PR directly with a merge commit.
 - A GitHub Actions release workflow named `release.yml`, unless you configure
   another workflow.
-- A recent GitHub CLI version that supports
-  `gh pr merge --match-head-commit`.
 
 The release workflow must run for the `pull_request` event, be associated with
 the release branch's head commit, and publish the expected tag or GitHub
@@ -82,14 +86,18 @@ VERSION=v1.2.3 gh release-flow start-dev
 
 The command:
 
-1. Refuses to run when tracked files have staged or unstaged changes.
+1. Refuses to run when tracked files have staged or unstaged changes, except on
+   the base branch. There it lists the changes once the version is known and
+   asks whether to move them to the release branch. Pressing Enter, or running
+   without a terminal, refuses as before.
 2. Fetches `origin`, then reads the version from the argument, then `VERSION`,
    or prompts for it, first showing the latest `v*` tag on the base branch.
 3. Normalizes an uppercase `V` prefix to lowercase.
-4. Validates the version and resulting `dev/<version>` Git branch name.
+4. Validates the version and resulting `dev/<version>` Git branch name, and
+   refuses to continue if a `dev` branch exists.
 5. Checks out the base branch and fast-forward pulls it.
-6. Checks out an existing local release branch or creates and publishes a new
-   one.
+6. Checks out an existing local release branch, checks out one that exists only
+   on `origin`, or creates and publishes a new one.
 
 Accepted versions follow `vMAJOR.MINOR.PATCH` with an optional prerelease
 suffix, such as `v2.0.0-beta.2`.
@@ -107,7 +115,8 @@ The command:
 
 1. Verifies the current branch is a valid `dev/v*` release branch and the
    tracked working tree is clean.
-2. Uses the branch's configured push remote, falling back to `origin`.
+2. Uses the remote the branch tracks (`branch.<name>.remote`), falling back
+   to `origin`.
 3. Publishes a missing remote branch or pushes local commits when the local
    branch is strictly ahead.
 4. Refuses to continue if the local branch is behind or has diverged from the
@@ -116,16 +125,16 @@ The command:
    branches, or creates one titled `Release <version>`.
 6. Generates the PR body from the repository's commit history.
 7. Waits briefly for CI checks to register, then watches them to completion.
-8. Prints the PR URL and exits unsuccessfully if checks fail or remain pending
-   after monitoring is interrupted.
+8. Prints the PR URL and exits unsuccessfully if checks fail or are still
+   pending when monitoring ends.
 
 If an existing PR receives newly pushed commits, its generated body is
 refreshed. If GitHub reports no checks after the registration retries, the
 command warns and returns without watching; `merge` will still require checks
 before it can merge the PR.
 
-Re-run `open-pr` to resume check monitoring. It will reuse the existing branch
-and PR.
+Ctrl+C stops the command immediately. Re-run `open-pr` to resume check
+monitoring. It will reuse the existing branch and PR.
 
 ### `merge`
 
@@ -142,13 +151,14 @@ For an open PR, the command:
 
 1. Finds the PR from the push repository for the current release branch, or
    validates the PR selected by `PR` against that repository.
-2. Requires registered, successful PR checks.
+2. Refuses PRs from forks.
 3. Verifies the local commit, remote branch, and PR head are the same commit.
-4. Shows the release version, PR, commit count, and exact head commit.
-5. Requests confirmation unless `CONFIRM=0`.
-6. Creates a merge commit with `--match-head-commit`, preventing a changed PR
+4. Requires registered, successful PR checks on that commit.
+5. Shows the release version, PR, commit count, and exact head commit.
+6. Requests confirmation unless `CONFIRM=0`.
+7. Creates a merge commit with `--match-head-commit`, preventing a changed PR
    head from being merged accidentally.
-7. Finds the configured release workflow run for the release head commit that
+8. Finds the configured release workflow run for the release head commit that
    was created no earlier than the PR merge, and watches it to completion.
 
 After the workflow succeeds, it:
@@ -162,7 +172,9 @@ After the workflow succeeds, it:
 
 If the PR is already merged, `merge` resumes at workflow monitoring and
 cleanup. If the workflow fails, cannot be identified, or is interrupted, the
-release branch is kept for debugging and the command can be run again.
+release branch is kept for debugging and the command can be run again. If a
+cleanup step fails after switching to the base branch, the error says how to
+resume.
 
 `merge-release` is an alias for `merge`.
 
@@ -228,7 +240,7 @@ commits authored by `github-actions[bot]`, and commits whose subject is
 full-changelog link.
 
 The repository used in commit links is resolved from `REPO`, then
-`GITHUB_REPOSITORY`, then the `origin` URL.
+`GITHUB_REPOSITORY`, then the `origin` URL. Links always point at github.com.
 
 ## Configuration
 
@@ -238,8 +250,8 @@ All configuration is provided through environment variables.
 | --- | --- | --- | --- |
 | `DEFAULT_BASE_BRANCH` | `main` | all commands | Branch from which releases start and into which release PRs merge. |
 | `RELEASE_WORKFLOW` | `release.yml` | `merge` | Workflow file or name passed to `gh run list --workflow`. |
-| `VERSION` | prompt (suggests next minor) | `start-dev` | Version used when no command argument is provided. |
-| `REPO` | current repository | `open-pr`, `merge` | Repository passed to GitHub CLI as `--repo`; also used for changelog links. |
+| `VERSION` | prompt (shows the latest release tag) | `start-dev` | Version used when no command argument is provided. |
+| `REPO` | current repository | `open-pr`, `merge` | Repository targeted by GitHub CLI, exported as `GH_REPO`; also used for changelog links. |
 | `PR` | auto-detected | `merge` | Specific PR number to validate and merge. |
 | `CONFIRM` | `1` | `merge` | Set to `0` to skip the merge confirmation prompt. |
 | `GITHUB_REPOSITORY` | derived from `origin` | `open-pr` | Fallback `owner/repo` used only for generated changelog links. |
@@ -258,11 +270,14 @@ use the current checkout and its configured remotes.
 
 ## Safety and recovery
 
-- Every command refuses staged or unstaged changes to tracked files. Untracked
-  files do not block the flow.
+- `open-pr` and `merge` refuse staged or unstaged changes to tracked files.
+  `start-dev` refuses them too, except on the base branch, where it offers to
+  move them to the release branch. Git refuses that move rather than overwrite
+  a changed file. Untracked files do not block the flow.
 - `open-pr` never overwrites a remote branch and refuses stale or diverged
   histories.
-- `merge` refuses missing checks and mismatched local, remote, or PR commits.
+- `merge` refuses missing checks, fork PRs, and mismatched local, remote, or PR
+  commits.
 - Remote cleanup uses `--force-with-lease` for the exact merged commit.
 - Branches are deleted only after a successful release workflow and an ancestry
   check on the updated base branch.
@@ -276,7 +291,8 @@ commands above; these internal functions implement that interface.
 | Function | Responsibility |
 | --- | --- |
 | `die` | Prints a consistent error and exits non-zero. |
-| `require_clean` | Rejects staged or unstaged tracked-file changes. |
+| `tree_dirty` | Reports staged or unstaged tracked-file changes. |
+| `require_clean` | Rejects running outside a Git working tree and staged or unstaged tracked-file changes. |
 | `require_gh` | Verifies that GitHub CLI is available. |
 | `push_repo_owner` | Resolves the owner of the release branch's push repository. |
 | `find_pr` | Finds a branch PR owned by that push repository. |
@@ -313,8 +329,10 @@ Run the self-contained integration test with:
 ```
 
 It creates temporary local repositories and a fake `gh` executable to exercise
-PR creation, changelog rendering, already-merged recovery, safe branch cleanup,
-and version normalization without modifying the working repository.
+branch creation, PR creation and body refresh, changelog rendering, stale and
+diverged branch refusals, merge guards, the merge itself, already-merged
+recovery, safe branch cleanup, and version normalization. It ignores your Git
+configuration and never modifies the working repository.
 
 Validate the shell scripts with:
 
