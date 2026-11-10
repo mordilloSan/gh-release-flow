@@ -49,6 +49,13 @@ gh release-flow upgrade
 GitHub CLI checks for a newer version once a day when the extension runs and
 prints an upgrade notice when one is available.
 
+Optionally add user-wide Make targets, so `make start-dev`, `make open-pr` and
+`make merge-release` work in every folder:
+
+```bash
+gh release-flow setup-make
+```
+
 Display the available commands and the installed version with:
 
 ```bash
@@ -180,10 +187,50 @@ resume.
 
 `merge-release` is an alias for `merge`.
 
+### `setup-make`
+
+Installs user-wide Make targets that run the commands from any folder:
+
+| Target | Runs |
+| --- | --- |
+| `make start-dev` | `gh release-flow start-dev` |
+| `make open-pr` | `gh release-flow open-pr` |
+| `make merge-release` | `gh release-flow merge-release` |
+| `make rf-version` | `gh release-flow version` |
+| `make rf-upgrade` | `gh release-flow upgrade` |
+
+Variables pass through, for example `make start-dev VERSION=v1.2.3`.
+
+```bash
+gh release-flow setup-make
+```
+
+It writes two files and adds two lines to `~/.bashrc`, and to `~/.zshrc` when
+that file exists:
+
+- `~/.config/make/release-flow.mk` holds the targets. The shell profile adds
+  it to `MAKEFILES`, so GNU Make loads it before every Makefile.
+- `~/.config/make/release-flow.sh` holds a `make` shell function. With it,
+  `make help` ends with a line that lists the targets, after the project's
+  own `help` output when the Makefile has a `help` target, and plain `make`
+  in a folder without a Makefile prints only that line. Other `make` runs are
+  unchanged.
+
+Run it again at any time to rewrite both files. It says when a new terminal
+is needed to load the changes. A `release-flow.mk` that `setup-make` did not
+write is replaced only after you confirm.
+
+If a project Makefile already defines one of these targets, make warns
+"overriding recipe" on every run there; delete those targets from the project
+Makefile. Make cannot load files from a home path that contains spaces, so
+`setup-make` refuses to run there.
+
 ### `upgrade`
 
 Upgrades the installed extension to the latest commit on `main`. It runs
-`gh extension upgrade release-flow` and works from any directory.
+`gh extension upgrade release-flow` and works from any directory. When the
+Make targets from `setup-make` are installed, it then runs the upgraded
+`setup-make` to refresh them, so `make rf-upgrade` updates both.
 
 ```bash
 gh release-flow upgrade
@@ -208,6 +255,7 @@ Usage:
   gh release-flow start-dev [version]
   gh release-flow open-pr
   gh release-flow merge
+  gh release-flow setup-make
   gh release-flow upgrade
   gh release-flow version
   gh release-flow help
@@ -311,13 +359,15 @@ commands above; these internal functions implement that interface.
 | `start_dev` | Updates the base branch and checks out or creates the release branch. |
 | `open_pr` | Synchronizes the release branch, creates or updates its PR, and monitors checks. |
 | `merge_release` | Validates and merges the PR, watches the release workflow, and cleans up branches. |
+| `setup_make` | Writes the user-wide Make targets and `make` shell function, and adds them to the shell profile. |
 | `usage` | Prints command-line usage. |
 | `main` | Validates arguments, resolves aliases, and dispatches commands. |
 
 ## Make compatibility
 
 The extension accepts the environment variables used by the previous Make
-flow. Existing targets can delegate directly to it:
+flow. [`setup-make`](#setup-make) installs targets that delegate to it for
+every folder. A single project can instead define its own:
 
 ```make
 .PHONY: start-dev open-pr merge-release
@@ -337,7 +387,7 @@ Run the self-contained integration test with:
 It creates temporary local repositories and a fake `gh` executable to exercise
 branch creation, PR creation and body refresh, changelog rendering, stale and
 diverged branch refusals, merge guards, the merge itself, already-merged
-recovery, safe branch cleanup, and version normalization. It ignores your Git
+recovery, safe branch cleanup, the Make targets, and version normalization. It ignores your Git
 configuration and never modifies the working repository.
 
 Validate the shell scripts with:

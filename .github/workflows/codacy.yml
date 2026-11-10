@@ -47,6 +47,11 @@ jobs:
         run: codacy-cli-v2 install
       - name: Run Codacy analysis
         run: codacy-cli-v2 analyze --format sarif --output "$RUNNER_TEMP/codacy.sarif"
+      # A tool with no rule metadata gets "rules": null, which the upload rejects as invalid SARIF.
+      - name: Normalize SARIF rules
+        run: |
+          jq '(.runs[].tool.driver.rules) //= []' "$RUNNER_TEMP/codacy.sarif" > "$RUNNER_TEMP/codacy.fixed.sarif"
+          mv "$RUNNER_TEMP/codacy.fixed.sarif" "$RUNNER_TEMP/codacy.sarif"
       - name: Upload SARIF results file
         uses: github/codeql-action/upload-sarif@v4
         with:
