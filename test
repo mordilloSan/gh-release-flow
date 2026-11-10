@@ -100,7 +100,7 @@ case "$1 $2" in
 	fi
 	;;
 'run view') ;;
-'extension upgrade') echo "$*" ;;
+'extension upgrade' | 'release-flow setup-make') echo "$*" ;;
 'release view') echo 'https://github.com/owner/project/releases/tag/v0.2.0' ;;
 *)
 	echo "unexpected gh invocation: $*" >&2
@@ -276,11 +276,58 @@ git -C "$repo" pull -q --ff-only
 # The version prompt explains a closed stdin instead of exiting silently.
 fails_with 'VERSION must look like' flow start-dev
 
-[[ $(PATH="$bin:$PATH" "$script_dir/gh-release-flow" upgrade) == 'extension upgrade release-flow' ]]
-if PATH="$bin:$PATH" "$script_dir/gh-release-flow" upgrade extra >/dev/null 2>&1; then
-	echo 'upgrade accepted an argument' >&2
-	exit 1
-fi
+# setup-make installs user-wide Make targets and a make function, and says when a new terminal is needed.
+home=$test_root/home
+mkdir -p "$home" "$test_root/empty" "$test_root/project"
+: >"$home/.zshrc"
+setup_make() {
+	HOME=$home PATH="$bin:$PATH" "$script_dir/gh-release-flow" setup-make
+}
+# Without Make targets from setup-make, upgrade only upgrades the extension.
+[[ $(HOME=$home PATH="$bin:$PATH" "$script_dir/gh-release-flow" upgrade) == 'extension upgrade release-flow' ]]
+[[ $(setup_make) == *'Open a new terminal'* && $(setup_make) == 'OK: Make targets are up to date.' ]]
+for rc in "$home/.bashrc" "$home/.zshrc"; do
+	[[ $(grep -c 'release-flow\.mk' "$rc") == 1 && $(grep -c 'release-flow\.sh' "$rc") == 1 ]]
+done
+targets_file=$home/.config/make/release-flow.mk
+[[ $(MAKEFILES=$targets_file make -C "$test_root/empty" --no-print-directory -n start-dev) == 'gh release-flow "start-dev"' ]]
+[[ $(MAKEFILES=$targets_file make -C "$test_root/empty" --no-print-directory -n rf-upgrade) == 'gh release-flow "upgrade"' ]]
+# Project Makefiles that read MAKEFILE_LIST do not see the user-wide file.
+# shellcheck disable=SC2016
+printf 'help:\n\t@echo project help\nwhere:\n\t@echo $(firstword $(MAKEFILE_LIST))\nfail:\n\t@exit 1\n' \
+	>"$test_root/project/Makefile"
+make_function() {
+	(cd "$test_root/$1" && HOME=$home MAKEFILES=$targets_file \
+		bash -c '. "$HOME/.config/make/release-flow.sh" && make "$@"' make "${@:2}")
+}
+targets_line='release-flow: make start-dev | open-pr | merge-release | rf-version | rf-upgrade'
+# make help ends with the targets; plain make without a Makefile prints only them; other runs are untouched.
+[[ $(make_function empty) == "$targets_line" && $(make_function empty help) == "$targets_line" ]]
+[[ $(make_function project help) == "project help"$'\n'"$targets_line" ]]
+[[ $(make_function project where) == Makefile ]]
+status=0
+make_function project fail >/dev/null 2>&1 || status=$?
+[[ $status == 2 ]]
+# A changed make function asks for a new terminal again.
+echo '# old' >"$home/.config/make/release-flow.sh"
+[[ $(setup_make) == *'Open a new terminal'* ]]
+# upgrade refreshes the Make targets that setup-make wrote.
+[[ $(HOME=$home PATH="$bin:$PATH" "$script_dir/gh-release-flow" upgrade) == 'extension upgrade release-flow'$'\n''release-flow setup-make' ]]
+# A file setup-make did not write is replaced only after a yes; upgrade leaves it alone.
+printf 'custom:\n' >"$targets_file"
+fails_with 'Kept' setup_make
+[[ $(<"$targets_file") == custom: ]]
+[[ $(HOME=$home PATH="$bin:$PATH" "$script_dir/gh-release-flow" upgrade) == 'extension upgrade release-flow' ]]
+setup_make <<<y >/dev/null
+grep -Fq 'rf-version rf-upgrade:' "$targets_file"
+fails_with 'path with spaces' env HOME="$test_root/my home" "$script_dir/gh-release-flow" setup-make
+[[ ! -e "$test_root/my home" ]]
+for command in upgrade setup-make; do
+	if HOME=$home PATH="$bin:$PATH" "$script_dir/gh-release-flow" "$command" extra >/dev/null 2>&1; then
+		echo "$command accepted an argument" >&2
+		exit 1
+	fi
+done
 
 [[ $("$script_dir/gh-release-flow" version) == 'gh-release-flow v'* ]]
 [[ $("$script_dir/gh-release-flow" --version) == 'gh-release-flow v'* ]]
