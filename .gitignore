@@ -1,0 +1,4 @@
+# Codacy CLI v2 writes logs and generated tool configs into .codacy/;
+# only codacy.yaml is source.
+.codacy/*
+!.codacy/codacy.yaml
