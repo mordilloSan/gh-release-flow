@@ -212,9 +212,11 @@ that file exists:
   it to `MAKEFILES`, so GNU Make loads it before every Makefile.
 - `~/.config/make/release-flow.sh` holds a `make` shell function. With it,
   `make help` ends with a line that lists the targets, after the project's
-  own `help` output when the Makefile has a `help` target, and plain `make`
-  in a folder without a Makefile prints only that line. Other `make` runs are
-  unchanged.
+  own `help` output when the Makefile has a `help` target. Plain `make` does
+  the same when the Makefile's default goal is `help`, whether it sets
+  `.DEFAULT_GOAL := help` or `help` is its first target (a default target that
+  only depends on `help` does not count). In a folder without a Makefile,
+  plain `make` prints only that line. Other `make` runs are unchanged.
 
 Run it again at any time to rewrite both files. It says when a new terminal
 is needed to load the changes. A `release-flow.mk` that `setup-make` did not
