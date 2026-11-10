@@ -5,7 +5,7 @@ DEFAULT_BASE_BRANCH=${DEFAULT_BASE_BRANCH:-main}
 RELEASE_WORKFLOW=${RELEASE_WORKFLOW:-release.yml}
 REPO=${REPO:-}
 CONFIRM=${CONFIRM:-1}
-TOOL_VERSION=v1.5.0 # bump on each release; VERSION is the release being cut
+TOOL_VERSION=v1.6.0 # bump on each release; VERSION is the release being cut
 PR=${PR:-}
 [[ -z $REPO ]] || export GH_REPO=$REPO
 export GH_PAGER=cat
@@ -510,8 +510,9 @@ setup_make() {
 		'' \
 		'# Keep project Makefiles that read MAKEFILE_LIST unaware of this file.' \
 		'MAKEFILE_LIST :=')
-	# make help ends with the targets, after the project's own help when it has one; they are all that
-	# plain make without a Makefile prints. Other runs are untouched.
+	# make help ends with the targets, after the project's own help when it has one, and so does plain
+	# make when the default goal is help; they are all that plain make without a Makefile prints.
+	# Other runs are untouched.
 	functions=$(
 		cat <<'EOF'
 make() {
@@ -520,7 +521,12 @@ make() {
 		printf '%s\n' "$targets"
 		return 0
 	fi
-	if [ "$*" != help ]; then
+	if [ $# -eq 0 ]; then
+		LC_ALL=C command make -pqn 2>/dev/null | grep -qx '.DEFAULT_GOAL := help' || {
+			command make
+			return
+		}
+	elif [ "$*" != help ]; then
 		command make "$@"
 		return
 	fi

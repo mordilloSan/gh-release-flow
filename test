@@ -305,6 +305,20 @@ targets_line='release-flow: make start-dev | open-pr | merge-release | rf-versio
 [[ $(make_function empty) == "$targets_line" && $(make_function empty help) == "$targets_line" ]]
 [[ $(make_function project help) == "project help"$'\n'"$targets_line" ]]
 [[ $(make_function project where) == Makefile ]]
+# Plain make behaves like make help when the default goal is help, set explicitly or by being first.
+mkdir -p "$test_root/helpdefault" "$test_root/helpfirst" "$test_root/otherdefault" "$test_root/helpfails"
+printf '.DEFAULT_GOAL := help\nbuild:\n\t@echo building\nhelp:\n\t@echo project help\n' >"$test_root/helpdefault/Makefile"
+cp "$test_root/project/Makefile" "$test_root/helpfirst/Makefile"
+printf 'build:\n\t@echo building\nhelp:\n\t@echo project help\n' >"$test_root/otherdefault/Makefile"
+printf '.DEFAULT_GOAL := help\nhelp:\n\t@echo project help\n\t@exit 1\n' >"$test_root/helpfails/Makefile"
+[[ $(make_function helpdefault) == "project help"$'\n'"$targets_line" ]]
+[[ $(make_function helpfirst) == "project help"$'\n'"$targets_line" ]]
+# Any other default goal, or any argument besides help, is untouched.
+[[ $(make_function otherdefault) == building ]]
+[[ $(make_function helpdefault build) == building ]]
+status=0
+make_function helpfails >/dev/null 2>&1 || status=$?
+[[ $status == 2 ]]
 status=0
 make_function project fail >/dev/null 2>&1 || status=$?
 [[ $status == 2 ]]
