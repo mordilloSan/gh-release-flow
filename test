@@ -352,6 +352,38 @@ for command in upgrade setup-make; do
 	fi
 done
 
+# init writes a known-good release workflow at the repository root, from any subfolder.
+init_repo=$test_root/init-repo
+mkdir -p "$init_repo/sub"
+git -C "$init_repo" init -q
+init() {
+	(cd "$init_repo/sub" && "$script_dir/gh-release-flow" "$@")
+}
+workflow=$init_repo/.github/workflows/release.yml
+[[ $(init init) == 'OK: Wrote .github/workflows/release.yml for releases merged into main.'* ]]
+grep -Fq "branches: ['main']" "$workflow"
+grep -Fq 'startsWith(github.event.pull_request.head.ref, '\''dev/v'\'')' "$workflow"
+# shellcheck disable=SC2016
+grep -Fq -- '--title "$tag"' "$workflow"
+[[ $(<"$workflow") != *__BASE_BRANCH__* ]]
+[[ $(tail -c 1 "$workflow" | od -An -c | tr -d ' ') == '\n' ]]
+# Running it again changes nothing; a different file is kept unless --force replaces it.
+[[ $(init init) == 'OK: .github/workflows/release.yml is up to date.' ]]
+echo '# mine' >>"$workflow"
+fails_with 'already exists and differs' init init
+[[ $(tail -n 1 "$workflow") == '# mine' ]]
+init init --force >/dev/null
+[[ $(<"$workflow") != *'# mine'* ]]
+# The base branch and the workflow file name follow the configuration.
+(cd "$init_repo" && DEFAULT_BASE_BRANCH=trunk RELEASE_WORKFLOW=publish.yaml "$script_dir/gh-release-flow" init >/dev/null)
+grep -Fq "branches: ['trunk']" "$init_repo/.github/workflows/publish.yaml"
+fails_with 'file name ending in .yml' env RELEASE_WORKFLOW=../release.yml "$script_dir/gh-release-flow" init
+fails_with 'cannot write DEFAULT_BASE_BRANCH' env DEFAULT_BASE_BRANCH="a'b" "$script_dir/gh-release-flow" init
+fails_with 'init accepts only --force' init init extra
+fails_with 'Not inside a Git working tree' bash -c "cd '$test_root' && '$script_dir/gh-release-flow' init"
+# The generated workflow passes actionlint when it is installed.
+if command -v actionlint >/dev/null; then (cd "$init_repo" && actionlint); fi
+
 [[ $("$script_dir/gh-release-flow" version) == 'gh-release-flow v'* ]]
 [[ $("$script_dir/gh-release-flow" --version) == 'gh-release-flow v'* ]]
 if "$script_dir/gh-release-flow" version extra >/dev/null 2>&1; then

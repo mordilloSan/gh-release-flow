@@ -5,7 +5,7 @@ DEFAULT_BASE_BRANCH=${DEFAULT_BASE_BRANCH:-main}
 RELEASE_WORKFLOW=${RELEASE_WORKFLOW:-release.yml}
 REPO=${REPO:-}
 CONFIRM=${CONFIRM:-1}
-TOOL_VERSION=v1.6.1 # bump on each release; VERSION is the release being cut
+TOOL_VERSION=v1.7.0 # bump on each release; VERSION is the release being cut
 PR=${PR:-}
 [[ -z $REPO ]] || export GH_REPO=$REPO
 export GH_PAGER=cat
@@ -583,9 +583,97 @@ EOF
 	fi
 }
 
+# Prints the release workflow that init writes, for the base branch given as $1.
+release_workflow_template() {
+	local template
+	read -r -d '' template <<'EOF' || true
+name: Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: ['__BASE_BRANCH__']
+
+permissions:
+  checks: read
+  contents: write
+  pull-requests: read
+
+jobs:
+  release:
+    name: Publish release
+    # Only merged release PRs from this repository: forks cannot publish.
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'dev/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require passing checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # This workflow is itself one of the PR's checks, so leave it out.
+          checks=$(gh pr checks "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json bucket,workflow)
+          jq -e --arg self "$GITHUB_WORKFLOW" '[.[] | select(.workflow != $self)] |
+            length > 0 and all(.[]; .bucket == "pass" or .bucket == "skipping")' <<< "$checks"
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: ${{ github.event.pull_request.head.ref }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          [[ "$RELEASE_BRANCH" =~ ^dev/v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]
+          tag=${RELEASE_BRANCH#dev/}
+          release_args=()
+          [[ "$tag" == *-* ]] && release_args+=(--prerelease)
+          # The release PR body holds the grouped changelog written by open-pr.
+          if [[ -n $PR_BODY ]]; then release_args+=(--notes "$PR_BODY"); else release_args+=(--generate-notes); fi
+          # Without --title, a release with --notes has no name; name it after its tag.
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "$tag" --target "$MERGE_SHA" "${release_args[@]}"
+EOF
+	printf '%s' "${template//__BASE_BRANCH__/$1}"
+}
+
+# Writes a known-good release workflow into the repository, where merge looks for it.
+init_workflow() {
+	local force=0 root path content
+	while (($#)); do
+		case $1 in
+		--force) force=1 ;;
+		*) die "init accepts only --force, not '$1'." ;;
+		esac
+		shift
+	done
+	[[ $(git rev-parse --is-inside-work-tree 2>/dev/null) == true ]] ||
+		die 'Not inside a Git working tree.'
+	[[ $RELEASE_WORKFLOW =~ ^[A-Za-z0-9._-]+\.ya?ml$ ]] ||
+		die "init needs RELEASE_WORKFLOW to be a file name ending in .yml or .yaml, not '$RELEASE_WORKFLOW'."
+	[[ $DEFAULT_BASE_BRANCH =~ ^[A-Za-z0-9._/-]+$ ]] ||
+		die "init cannot write DEFAULT_BASE_BRANCH '$DEFAULT_BASE_BRANCH' into a workflow."
+	root=$(git rev-parse --show-toplevel)
+	path=$root/.github/workflows/$RELEASE_WORKFLOW
+	content=$(release_workflow_template "$DEFAULT_BASE_BRANCH")
+	if [[ -e $path ]]; then
+		if [[ $(<"$path") == "$content" ]]; then
+			echo "OK: .github/workflows/$RELEASE_WORKFLOW is up to date."
+			return
+		fi
+		((force)) ||
+			die ".github/workflows/$RELEASE_WORKFLOW already exists and differs. Review it, or run 'gh release-flow init --force' to replace it."
+	fi
+	mkdir -p "$root/.github/workflows"
+	printf '%s\n' "$content" >"$path"
+	echo "OK: Wrote .github/workflows/$RELEASE_WORKFLOW for releases merged into $DEFAULT_BASE_BRANCH."
+	echo "    Review and commit it to $DEFAULT_BASE_BRANCH, then run 'gh release-flow start-dev'."
+}
+
 usage() {
 	cat <<'EOF'
 Usage:
+  gh release-flow init [--force]
   gh release-flow start-dev [version]
   gh release-flow open-pr
   gh release-flow merge
@@ -600,6 +688,9 @@ main() {
 	local command=${1:-}
 	[[ -z $command ]] || shift
 	case $command in
+	init)
+		init_workflow "$@"
+		;;
 	start-dev)
 		(($# <= 1)) || die 'start-dev accepts one version.'
 		start_dev "${1:-}"
