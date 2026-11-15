@@ -5,7 +5,7 @@ DEFAULT_BASE_BRANCH=${DEFAULT_BASE_BRANCH:-main}
 RELEASE_WORKFLOW=${RELEASE_WORKFLOW:-release.yml}
 REPO=${REPO:-}
 CONFIRM=${CONFIRM:-1}
-TOOL_VERSION=v1.6.0 # bump on each release; VERSION is the release being cut
+TOOL_VERSION=v1.6.1 # bump on each release; VERSION is the release being cut
 PR=${PR:-}
 [[ -z $REPO ]] || export GH_REPO=$REPO
 export GH_PAGER=cat
@@ -308,7 +308,7 @@ merge_release() {
 	local pr_info pr_base pr_head pr_oid pr_owner pr_cross previous commit_count commit_scope answer merged_at
 	local check_output check_status=0 workflow_tsv='' run_id status conclusion i
 	local workflow_success=0 start_time total_time final_conclusion
-	local cleanup_info release_url resume_hint
+	local cleanup_info release_info release_url release_name resume_hint
 	require_clean
 	require_gh
 	gh run list --help 2>&1 | grep -q -- '--commit' ||
@@ -477,10 +477,23 @@ merge_release() {
 		git branch -d "$BRANCH" ||
 			die "Unable to delete local branch $BRANCH. Review its commits with 'git log $DEFAULT_BASE_BRANCH..$BRANCH'."
 		echo 'OK: Branch cleanup complete'
-		release_url=$(gh release view "$VERSION" --json url --jq '.url' 2>/dev/null || true)
+		release_info=$(gh release view "$VERSION" --json url,name --jq '"\(.url)\t\(.name)"' 2>/dev/null || true)
+		IFS=$'\t' read -r release_url release_name <<<"$release_info"
 		echo
-		[[ -z $release_url ]] && echo "OK: Release $VERSION complete (no GitHub Release found for $VERSION)." ||
+		if [[ -z $release_url ]]; then
+			echo "OK: Release $VERSION complete (no GitHub Release found for $VERSION)."
+		else
+			# gh release create --notes without --title leaves a release unnamed.
+			if [[ -z $release_name ]]; then
+				echo "WARNING: $RELEASE_WORKFLOW published $VERSION without a title; pass --title to gh release create."
+				if gh release edit "$VERSION" --title "$VERSION" >/dev/null; then
+					echo "OK: Release title set to $VERSION"
+				else
+					echo "WARNING: Unable to set the title. Run 'gh release edit $VERSION --title $VERSION'."
+				fi
+			fi
 			echo "OK: Release $VERSION published: $release_url"
+		fi
 	else
 		die "Workflow did not succeed. Keeping branch $BRANCH for debugging."
 	fi

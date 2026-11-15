@@ -33,6 +33,9 @@ responsibility of your release workflow.
 The release workflow must run for the `pull_request` event, be associated with
 the release branch's head commit, and publish the expected tag or GitHub
 Release. The `merge` command uses those details to find the exact workflow run.
+A GitHub Release is named after its tag: pass `--title "$TAG"` to
+`gh release create`, because a release created with `--notes` and no `--title`
+has no name.
 
 ## Install
 
@@ -177,7 +180,9 @@ After the workflow succeeds, it:
 3. Verifies the remote release branch has not advanced since the merge.
 4. Deletes the remote branch with a commit-specific force-with-lease, then
    deletes the local branch.
-5. Prints the GitHub Release URL when one is available.
+5. Prints the GitHub Release URL when one is available. If that release has no
+   title, it sets the title to the version and warns that the release workflow
+   should pass `--title`.
 
 If the PR is already merged, `merge` resumes at workflow monitoring and
 cleanup. If the workflow fails, cannot be identified, or is interrupted, the
