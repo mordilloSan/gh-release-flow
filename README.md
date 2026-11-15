@@ -28,11 +28,14 @@ responsibility of your release workflow.
 - Merge commits allowed on the base branch, and no merge queue. `merge` merges
   the PR directly with a merge commit.
 - A GitHub Actions release workflow named `release.yml`, unless you configure
-  another workflow.
+  another workflow. [`init`](#init---force) writes one for you.
 
 The release workflow must run for the `pull_request` event, be associated with
 the release branch's head commit, and publish the expected tag or GitHub
 Release. The `merge` command uses those details to find the exact workflow run.
+A GitHub Release is named after its tag: pass `--title "$TAG"` to
+`gh release create`, because a release created with `--notes` and no `--title`
+has no name.
 
 ## Install
 
@@ -66,6 +69,9 @@ gh release-flow version
 ## Quick start
 
 ```bash
+# In a new repository, write a release workflow and commit it to main.
+gh release-flow init
+
 # Update main and create dev/v1.2.3.
 gh release-flow start-dev v1.2.3
 
@@ -80,6 +86,39 @@ Run `open-pr` and `merge` while checked out on the release branch. Release
 branches must use `dev/v1.2.3` or `dev/v1.2.3-rc.1` format.
 
 ## Command reference
+
+### `init [--force]`
+
+Writes a known-good release workflow into a new repository, at
+`.github/workflows/release.yml`, or at the file named by `RELEASE_WORKFLOW`.
+It works from any folder inside the repository, writes at its root, and never
+commits.
+
+```bash
+gh release-flow init
+git add .github/workflows/release.yml
+git commit -m 'ci: add release workflow'
+```
+
+The workflow runs when a pull request into the base branch
+(`DEFAULT_BASE_BRANCH`, `main` by default) is merged. It does nothing unless
+the PR came from a `dev/vX.Y.Z` branch in the same repository. It then:
+
+1. Requires every other check on the PR to have passed (or been skipped), and
+   at least one to exist, as `merge` does. The release workflow itself is
+   left out of that count.
+2. Creates the GitHub Release for the tag in the branch name, titled with the
+   tag, with the PR body (the changelog from `open-pr`) as its notes. A
+   `dev/v1.2.3-rc.1` branch makes a prerelease.
+
+It publishes no assets, so add `gh release create` arguments such as file
+paths if you ship any. Commit the workflow to the base branch before the first
+`start-dev`, so GitHub runs it for the release PR.
+
+An existing file with the same content is left alone. A different one is
+refused, so your edits are never lost, until you review it and pass `--force`
+to replace it. `RELEASE_WORKFLOW` must be a file name ending in `.yml` or
+`.yaml`.
 
 ### `start-dev [version]`
 
@@ -177,7 +216,9 @@ After the workflow succeeds, it:
 3. Verifies the remote release branch has not advanced since the merge.
 4. Deletes the remote branch with a commit-specific force-with-lease, then
    deletes the local branch.
-5. Prints the GitHub Release URL when one is available.
+5. Prints the GitHub Release URL when one is available. If that release has no
+   title, it sets the title to the version and warns that the release workflow
+   should pass `--title`.
 
 If the PR is already merged, `merge` resumes at workflow monitoring and
 cleanup. If the workflow fails, cannot be identified, or is interrupted, the
@@ -254,6 +295,7 @@ Prints command-line usage. `--help` and `-h` are aliases.
 ```console
 $ gh release-flow help
 Usage:
+  gh release-flow init [--force]
   gh release-flow start-dev [version]
   gh release-flow open-pr
   gh release-flow merge
@@ -304,8 +346,8 @@ All configuration is provided through environment variables.
 
 | Variable | Default | Used by | Purpose |
 | --- | --- | --- | --- |
-| `DEFAULT_BASE_BRANCH` | `main` | all commands | Branch from which releases start and into which release PRs merge. |
-| `RELEASE_WORKFLOW` | `release.yml` | `merge` | Workflow file or name passed to `gh run list --workflow`. |
+| `DEFAULT_BASE_BRANCH` | `main` | all commands | Branch from which releases start and into which release PRs merge; `init` writes it into the workflow trigger. |
+| `RELEASE_WORKFLOW` | `release.yml` | `merge`, `init` | Workflow file or name passed to `gh run list --workflow`; `init` writes this file name under `.github/workflows/`. |
 | `VERSION` | prompt (shows the latest release tag) | `start-dev` | Version used when no command argument is provided. |
 | `REPO` | repository the branch is pushed to | `open-pr`, `merge` | Repository targeted by GitHub CLI, exported as `GH_REPO`; also used for changelog links. |
 | `PR` | auto-detected | `merge` | Specific PR number to validate and merge. |
@@ -361,6 +403,8 @@ commands above; these internal functions implement that interface.
 | `start_dev` | Updates the base branch and checks out or creates the release branch. |
 | `open_pr` | Synchronizes the release branch, creates or updates its PR, and monitors checks. |
 | `merge_release` | Validates and merges the PR, watches the release workflow, and cleans up branches. |
+| `release_workflow_template` | Prints the release workflow for a base branch. |
+| `init_workflow` | Writes the release workflow into the repository, refusing to replace a different file without `--force`. |
 | `setup_make` | Writes the user-wide Make targets and `make` shell function, and adds them to the shell profile. |
 | `usage` | Prints command-line usage. |
 | `main` | Validates arguments, resolves aliases, and dispatches commands. |
@@ -387,7 +431,7 @@ Run the self-contained integration test with:
 ```
 
 It creates temporary local repositories and a fake `gh` executable to exercise
-branch creation, PR creation and body refresh, changelog rendering, stale and
+release workflow generation, branch creation, PR creation and body refresh, changelog rendering, stale and
 diverged branch refusals, merge guards, the merge itself, already-merged
 recovery, safe branch cleanup, the Make targets, and version normalization. It ignores your Git
 configuration and never modifies the working repository.

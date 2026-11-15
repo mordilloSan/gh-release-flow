@@ -14,6 +14,7 @@ bin=$test_root/bin
 state=$test_root/gh-state
 body=$test_root/pr-body
 merge_log=$test_root/gh-merge
+release_log=$test_root/gh-release-edit
 mkdir -p "$repo" "$bin"
 
 git -C "$repo" init -q
@@ -101,7 +102,8 @@ case "$1 $2" in
 	;;
 'run view') ;;
 'extension upgrade' | 'release-flow setup-make') echo "$*" ;;
-'release view') echo 'https://github.com/owner/project/releases/tag/v0.2.0' ;;
+'release view') printf 'https://github.com/owner/project/releases/tag/%s\t%s\n' "$3" "${GH_RELEASE_NAME-$3}" ;;
+'release edit') echo "$*" >>"$GH_RELEASE_LOG" ;;
 *)
 	echo "unexpected gh invocation: $*" >&2
 	exit 1
@@ -116,7 +118,7 @@ chmod +x "$bin/gh" "$bin/sleep"
 
 flow() {
 	(cd "$repo" && PATH="$bin:$PATH" GH_STATE=$state GH_BODY=$body GH_MERGE_LOG=$merge_log \
-		"$script_dir/gh-release-flow" "$@")
+		GH_RELEASE_LOG=$release_log "$script_dir/gh-release-flow" "$@")
 }
 fails_with() {
 	local want=$1 out
@@ -204,12 +206,14 @@ if [[ -e $merge_log ]]; then
 	exit 1
 fi
 
-# merge pins the exact head commit, then cleans up.
+# merge pins the exact head commit, then cleans up and names a release published without a title.
 release_head=$(git -C "$repo" rev-parse HEAD)
-GH_CHECKS=pass CONFIRM=0 flow merge >/dev/null
+out=$(GH_CHECKS=pass CONFIRM=0 GH_RELEASE_NAME='' flow merge)
 grep -Fq -- "--match-head-commit $release_head" "$merge_log"
 [[ $(git -C "$repo" branch --show-current) == main ]]
 branch_gone dev/v0.2.0
+[[ $(<"$release_log") == 'release edit v0.2.0 --title v0.2.0' ]]
+[[ $out == *'release.yml published v0.2.0 without a title'* ]]
 
 # start-dev creates and publishes a release branch, and later reuses the remote copy.
 flow start-dev v0.3.0 >/dev/null
@@ -240,9 +244,14 @@ GH_MERGED=1 GH_PR_OID=$release_head fails_with 'Unable to delete local branch' f
 git -C "$repo" show-ref --verify --quiet refs/heads/dev/v0.3.0
 git -C "$repo" checkout -q dev/v0.3.0
 git -C "$repo" reset -q --hard "$release_head"
+rm -f -- "$release_log"
 GH_MERGED=1 GH_PR_OID=$release_head flow merge >/dev/null
 [[ $(git -C "$repo" branch --show-current) == main ]]
 branch_gone dev/v0.3.0
+if [[ -e $release_log ]]; then
+	echo 'merge renamed a release that already had a title' >&2
+	exit 1
+fi
 
 # start-dev offers to move uncommitted changes from main, and only from main.
 printf 'one\n' >"$repo/notes.txt"
@@ -342,6 +351,38 @@ for command in upgrade setup-make; do
 		exit 1
 	fi
 done
+
+# init writes a known-good release workflow at the repository root, from any subfolder.
+init_repo=$test_root/init-repo
+mkdir -p "$init_repo/sub"
+git -C "$init_repo" init -q
+init() {
+	(cd "$init_repo/sub" && "$script_dir/gh-release-flow" "$@")
+}
+workflow=$init_repo/.github/workflows/release.yml
+[[ $(init init) == 'OK: Wrote .github/workflows/release.yml for releases merged into main.'* ]]
+grep -Fq "branches: ['main']" "$workflow"
+grep -Fq 'startsWith(github.event.pull_request.head.ref, '\''dev/v'\'')' "$workflow"
+# shellcheck disable=SC2016
+grep -Fq -- '--title "$tag"' "$workflow"
+[[ $(<"$workflow") != *__BASE_BRANCH__* ]]
+[[ $(tail -c 1 "$workflow" | od -An -c | tr -d ' ') == '\n' ]]
+# Running it again changes nothing; a different file is kept unless --force replaces it.
+[[ $(init init) == 'OK: .github/workflows/release.yml is up to date.' ]]
+echo '# mine' >>"$workflow"
+fails_with 'already exists and differs' init init
+[[ $(tail -n 1 "$workflow") == '# mine' ]]
+init init --force >/dev/null
+[[ $(<"$workflow") != *'# mine'* ]]
+# The base branch and the workflow file name follow the configuration.
+(cd "$init_repo" && DEFAULT_BASE_BRANCH=trunk RELEASE_WORKFLOW=publish.yaml "$script_dir/gh-release-flow" init >/dev/null)
+grep -Fq "branches: ['trunk']" "$init_repo/.github/workflows/publish.yaml"
+fails_with 'file name ending in .yml' env RELEASE_WORKFLOW=../release.yml "$script_dir/gh-release-flow" init
+fails_with 'cannot write DEFAULT_BASE_BRANCH' env DEFAULT_BASE_BRANCH="a'b" "$script_dir/gh-release-flow" init
+fails_with 'init accepts only --force' init init extra
+fails_with 'Not inside a Git working tree' bash -c "cd '$test_root' && '$script_dir/gh-release-flow' init"
+# The generated workflow passes actionlint when it is installed.
+if command -v actionlint >/dev/null; then (cd "$init_repo" && actionlint); fi
 
 [[ $("$script_dir/gh-release-flow" version) == 'gh-release-flow v'* ]]
 [[ $("$script_dir/gh-release-flow" --version) == 'gh-release-flow v'* ]]
