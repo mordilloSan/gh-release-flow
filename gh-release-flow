@@ -523,13 +523,17 @@ setup_make() {
 		'' \
 		'# Keep project Makefiles that read MAKEFILE_LIST unaware of this file.' \
 		'MAKEFILE_LIST :=')
-	# make help ends with the targets, after the project's own help when it has one, and so does plain
+	# make help ends with the targets, a blank line after the project's own help when it has one, and so does plain
 	# make when the default goal is help; they are all that plain make without a Makefile prints.
 	# Other runs are untouched.
 	functions=$(
 		cat <<'EOF'
 make() {
-	local code=0 targets='release-flow: make start-dev | open-pr | merge-release | rf-version | rf-upgrade'
+	local code=0 targets=' release-flow:  start-dev  open-pr  merge-release  rf-version  rf-upgrade'
+	# Grey on a terminal, and never with NO_COLOR set.
+	if [ -t 1 ] && [ -z "${NO_COLOR-}" ]; then
+		targets=$(printf '\033[90m%s\033[0m' "$targets")
+	fi
 	if [ $# -eq 0 ] && [ ! -e GNUmakefile ] && [ ! -e makefile ] && [ ! -e Makefile ]; then
 		printf '%s\n' "$targets"
 		return 0
@@ -545,7 +549,10 @@ make() {
 	fi
 	case $(LC_ALL=C command make -q help 2>&1 >/dev/null) in
 	*"No rule to make target 'help'"*) ;;
-	*) command make help || code=$? ;;
+	*)
+		command make help || code=$?
+		echo
+		;;
 	esac
 	printf '%s\n' "$targets"
 	return "$code"
