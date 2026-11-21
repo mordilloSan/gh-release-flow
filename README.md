@@ -37,6 +37,10 @@ A GitHub Release is named after its tag: pass `--title "$TAG"` to
 `gh release create`, because a release created with `--notes` and no `--title`
 has no name.
 
+[Git workflow assumptions](docs/git-workflow.md) lists everything the flow
+assumes about branches, tags, commits and merges, and which assumptions it
+enforces.
+
 ## Install
 
 ```bash
