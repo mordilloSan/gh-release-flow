@@ -5,7 +5,6 @@ DEFAULT_BASE_BRANCH=${DEFAULT_BASE_BRANCH:-main}
 RELEASE_WORKFLOW=${RELEASE_WORKFLOW:-release.yml}
 REPO=${REPO:-}
 CONFIRM=${CONFIRM:-1}
-TOOL_VERSION=v1.7.0 # bump on each release; VERSION is the release being cut
 PR=${PR:-}
 [[ -z $REPO ]] || export GH_REPO=$REPO
 export GH_PAGER=cat
@@ -56,6 +55,19 @@ find_pr() {
 
 latest_tag() {
 	git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' "origin/$DEFAULT_BASE_BRANCH" 2>/dev/null || true
+}
+
+# The tool's own version is the release tag of its git clone, which is how gh installs it; VERSION is
+# the release being cut. A copy outside its own clone has no version.
+tool_version() {
+	local dir top
+	dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+	# A hook's GIT_DIR would point git at the repository being released.
+	top=$(env -u GIT_DIR -u GIT_WORK_TREE git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || top=''
+	if [[ $top == "$dir" ]]; then
+		env -u GIT_DIR -u GIT_WORK_TREE git -C "$dir" describe --tags --match 'v[0-9]*' 2>/dev/null && return
+	fi
+	echo unknown
 }
 
 read_version() {
@@ -523,13 +535,18 @@ setup_make() {
 		'' \
 		'# Keep project Makefiles that read MAKEFILE_LIST unaware of this file.' \
 		'MAKEFILE_LIST :=')
-	# make help ends with the targets, after the project's own help when it has one, and so does plain
+	# make help ends with the targets, a blank line after the project's own help when it has one, and so does plain
 	# make when the default goal is help; they are all that plain make without a Makefile prints.
 	# Other runs are untouched.
 	functions=$(
 		cat <<'EOF'
 make() {
-	local code=0 targets='release-flow: make start-dev | open-pr | merge-release | rf-version | rf-upgrade'
+	local code=0 targets='start-dev  open-pr  merge-release  rf-version  rf-upgrade'
+	# The target names are grey on a terminal, and never with NO_COLOR set.
+	if [ -t 1 ] && [ -z "${NO_COLOR-}" ]; then
+		targets=$(printf '\033[90m%s\033[0m' "$targets")
+	fi
+	targets=" release-flow:  $targets"
 	if [ $# -eq 0 ] && [ ! -e GNUmakefile ] && [ ! -e makefile ] && [ ! -e Makefile ]; then
 		printf '%s\n' "$targets"
 		return 0
@@ -545,7 +562,10 @@ make() {
 	fi
 	case $(LC_ALL=C command make -q help 2>&1 >/dev/null) in
 	*"No rule to make target 'help'"*) ;;
-	*) command make help || code=$? ;;
+	*)
+		command make help || code=$?
+		echo
+		;;
 	esac
 	printf '%s\n' "$targets"
 	return "$code"
@@ -718,7 +738,7 @@ main() {
 		;;
 	version | --version)
 		(($# == 0)) || die 'version accepts no arguments.'
-		echo "gh-release-flow $TOOL_VERSION"
+		echo "gh-release-flow $(tool_version)"
 		;;
 	-h | --help | help | '') usage ;;
 	*)

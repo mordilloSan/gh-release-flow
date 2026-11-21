@@ -283,6 +283,11 @@ gh release-flow upgrade
 
 Prints the installed extension version. `--version` is an alias.
 
+The version is the release tag of the extension's own Git clone, which is how
+`gh extension install` installs it, so nothing is bumped by hand for a release.
+A checkout ahead of the last release prints a form like `v1.7.0-3-g1a2b3c4`,
+and a copy of the script outside its clone prints `unknown`.
+
 ```console
 $ gh release-flow version
 gh-release-flow v1.3.0
@@ -395,6 +400,7 @@ commands above; these internal functions implement that interface.
 | `use_push_repo` | Resolves the release branch's push repository and points GitHub CLI at it unless `REPO` is set. |
 | `find_pr` | Finds a branch PR owned by that push repository. |
 | `latest_tag` | Prints the latest release tag on the fetched base branch. |
+| `tool_version` | Prints the release tag of the tool's own Git clone, or `unknown` outside one. |
 | `read_version` | Reads, normalizes, and validates a version, then derives its release branch. |
 | `read_release_branch` | Validates the current branch and extracts its version. |
 | `previous_tag` | Finds the nearest reachable release tag. |
@@ -427,7 +433,7 @@ start-dev open-pr merge-release:
 Run the self-contained integration test with:
 
 ```bash
-./test
+make test
 ```
 
 It creates temporary local repositories and a fake `gh` executable to exercise
