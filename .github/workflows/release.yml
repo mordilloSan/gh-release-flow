@@ -56,6 +56,8 @@ jobs:
           [[ "$RELEASE_TAG" == *-* ]] && release_args+=(--prerelease)
           # The release PR body holds the grouped changelog written by open-pr.
           if [[ -n $PR_BODY ]]; then release_args+=(--notes "$PR_BODY"); else release_args+=(--generate-notes); fi
+          # Lets a download be checked with: sha256sum -c --ignore-missing SHA256SUMS
+          sha256sum -- gh-release-flow >SHA256SUMS
           # Without --title, a release with --notes has no name; name it after its tag.
-          gh release create "$RELEASE_TAG" gh-release-flow --title "$RELEASE_TAG" --target "$MERGE_SHA" "${release_args[@]}"
+          gh release create "$RELEASE_TAG" gh-release-flow SHA256SUMS --title "$RELEASE_TAG" --target "$MERGE_SHA" "${release_args[@]}"
 
