@@ -427,7 +427,7 @@ start-dev open-pr merge-release:
 Run the self-contained integration test with:
 
 ```bash
-./test
+make test
 ```
 
 It creates temporary local repositories and a fake `gh` executable to exercise

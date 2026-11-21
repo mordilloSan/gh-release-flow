@@ -2,7 +2,15 @@
 set -euo pipefail
 # Ignore the caller's Git and tool settings: a hook's GIT_DIR would point every git call at the real repo.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE REPO PR VERSION CONFIRM DEFAULT_BASE_BRANCH RELEASE_WORKFLOW GITHUB_REPOSITORY
+# Under make test, the make variables would turn the tests' own make runs into sub-makes that print "Entering directory".
+unset MAKELEVEL MAKEFLAGS MFLAGS
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+# The status tag, coloured only on a terminal and never with NO_COLOR set.
+if [[ -t 1 && -z ${NO_COLOR-} ]]; then
+	ok_tag=$'\033[90m[\033[38;5;154m  OK  \033[90m]\033[0m'
+else
+	ok_tag='[  OK  ]'
+fi
 
 exec </dev/null # prompts see a closed stdin unless a step feeds an answer
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -414,4 +422,4 @@ done
 	grep -Fq 'https://github.com/acme/other/compare/v0.1.0...v0.4.0' "$PR_BODY_FILE"
 	rm -f "$PR_BODY_FILE"
 )
-echo 'tests passed'
+printf ' %s tests passed in %ss\n' "$ok_tag" "$SECONDS"

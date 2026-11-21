@@ -22,7 +22,7 @@ jobs:
       - name: Check syntax and style
         run: make check
       - name: Test behavior
-        run: ./test
+        run: make test
       - name: Check tool version matches release branch
         if: startsWith(github.head_ref, 'dev/v')
         run: |
