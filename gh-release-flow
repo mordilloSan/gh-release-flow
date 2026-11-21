@@ -525,9 +525,9 @@ setup_make() {
 	fi
 
 	targets=$(printf '%s\n' "$make_marker" \
-		'.PHONY: start-dev open-pr merge-release rf-version rf-upgrade' \
+		'.PHONY: init start-dev open-pr merge-release rf-version rf-upgrade' \
 		'' \
-		'start-dev open-pr merge-release:' \
+		'init start-dev open-pr merge-release:' \
 		$'\t@gh release-flow "$@"' \
 		'' \
 		'rf-version rf-upgrade:' \
@@ -541,7 +541,7 @@ setup_make() {
 	functions=$(
 		cat <<'EOF'
 make() {
-	local code=0 targets='start-dev  open-pr  merge-release  rf-version  rf-upgrade'
+	local code=0 targets='init  start-dev  open-pr  merge-release  rf-version  rf-upgrade'
 	# The target names are grey on a terminal, and never with NO_COLOR set.
 	if [ -t 1 ] && [ -z "${NO_COLOR-}" ]; then
 		targets=$(printf '\033[90m%s\033[0m' "$targets")
@@ -657,22 +657,35 @@ EOF
 	printf '%s' "${template//__BASE_BRANCH__/$1}"
 }
 
-# Writes a known-good release workflow into the repository, where merge looks for it.
-init_workflow() {
-	local force=0 root path content
-	while (($#)); do
-		case $1 in
-		--force) force=1 ;;
-		*) die "init accepts only --force, not '$1'." ;;
-		esac
-		shift
-	done
+# The settings files init knows, in the order it applies them, each with its method and its path after
+# repos/{owner}/{repo}. A .json file is the request body; any other file means a PUT without a body.
+# GitHub turns on automated security fixes only after vulnerability alerts, and CodeQL default setup
+# comes last, after the push, so it has code to analyse.
+settings_calls=(
+	'repo.json PATCH'
+	'actions-workflow.json PUT /actions/permissions/workflow'
+	'vulnerability-alerts PUT /vulnerability-alerts'
+	'automated-security-fixes PUT /automated-security-fixes'
+	'private-vulnerability-reporting PUT /private-vulnerability-reporting'
+	'immutable-releases PUT /immutable-releases'
+	'code-scanning-default-setup.json PATCH /code-scanning/default-setup'
+)
+
+# Asks a [y/N] question on the terminal; only y or yes says yes.
+confirm() {
+	local answer
+	printf '    %s [y/N] ' "$1"
+	read -r answer || answer=''
+	# Without a terminal the answer is not echoed, so end the prompt line here.
+	[[ -t 0 ]] || echo
+	[[ $answer =~ ^[yY]([eE][sS])?$ ]]
+}
+
+# Writes a known-good release workflow into the repository, where merge looks for it: init without defaults.
+write_release_workflow() {
+	local force=$1 root path content
 	[[ $(git rev-parse --is-inside-work-tree 2>/dev/null) == true ]] ||
 		die 'Not inside a Git working tree.'
-	[[ $RELEASE_WORKFLOW =~ ^[A-Za-z0-9._-]+\.ya?ml$ ]] ||
-		die "init needs RELEASE_WORKFLOW to be a file name ending in .yml or .yaml, not '$RELEASE_WORKFLOW'."
-	[[ $DEFAULT_BASE_BRANCH =~ ^[A-Za-z0-9._/-]+$ ]] ||
-		die "init cannot write DEFAULT_BASE_BRANCH '$DEFAULT_BASE_BRANCH' into a workflow."
 	root=$(git rev-parse --show-toplevel)
 	path=$root/.github/workflows/$RELEASE_WORKFLOW
 	content=$(release_workflow_template "$DEFAULT_BASE_BRANCH")
@@ -688,6 +701,380 @@ init_workflow() {
 	printf '%s\n' "$content" >"$path"
 	echo "OK: Wrote .github/workflows/$RELEASE_WORKFLOW for releases merged into $DEFAULT_BASE_BRANCH."
 	echo "    Review and commit it to $DEFAULT_BASE_BRANCH, then run 'gh release-flow start-dev'."
+}
+
+# Downloads <owner>/.github/defaults/ for the owner $1 into DEFAULTS_DIR, through the Git tree and blob API,
+# and fills the caller's default_files, ruleset_files, ruleset_names and ruleset_targets. Returns 1 when the
+# owner has no defaults/ folder there. init reads these files as data and never runs them.
+fetch_defaults() {
+	local owner=$1 dir=$DEFAULTS_DIR listing mode sha path rel entry known meta rs_name rs_target
+	if ! listing=$(gh api "repos/$owner/.github/git/trees/HEAD?recursive=1" --jq '
+		if .truncated then error("the file list of \(.url) is truncated") else
+			.tree[] | select(.type == "blob" and (.path | startswith("defaults/"))) | [.mode, .sha, .path] | @tsv
+		end' 2>"$dir/error"); then
+		# No .github repository, or an empty one, means no defaults either.
+		grep -Eq 'HTTP (404|409)' "$dir/error" && return 1
+		cat -- "$dir/error" >&2
+		die "Unable to read the defaults in $owner/.github."
+	fi
+	[[ -n $listing ]] || return 1
+	echo "==> Reading the defaults in $owner/.github…"
+	while IFS=$'\t' read -r mode sha path; do
+		rel=${path#defaults/}
+		# A path that climbs out of the repository or into .git would write where init must not.
+		case /$rel/ in
+		*/../* | */./* | */[.][gG][iI][tT]/* | *\\*) die "Refusing the defaults path '$path'." ;;
+		esac
+		known=1
+		case $rel in
+		files/.github/workflows/"$RELEASE_WORKFLOW")
+			echo "==> Skipped $path: the release workflow comes from gh-release-flow."
+			continue
+			;;
+		files/*)
+			[[ $mode != 120000 ]] || die "$path in $owner/.github is a symbolic link; defaults/files/ holds regular files only."
+			default_files+=("${rel#files/}")
+			;;
+		settings/*/* | rulesets/*/*) known=0 ;;
+		settings/*)
+			known=0
+			for entry in "${settings_calls[@]}"; do
+				[[ ${entry%% *} != "${rel#settings/}" ]] || known=1
+			done
+			;;
+		rulesets/*.json)
+			meta=$(gh api "repos/$owner/.github/git/blobs/$sha" --jq '.content | @base64d | fromjson | [.name, .target] | @tsv') ||
+				die "$path in $owner/.github must hold one JSON object."
+			IFS=$'\t' read -r rs_name rs_target <<<"$meta"
+			[[ -n $rs_name && ($rs_target == branch || $rs_target == tag) ]] ||
+				die "$path in $owner/.github needs a top-level name, and a target of branch or tag."
+			ruleset_files+=("$rel")
+			ruleset_names+=("$rs_name")
+			ruleset_targets+=("$rs_target")
+			;;
+		*) known=0 ;;
+		esac
+		# A newer convention may add files; an older gh-release-flow reports them instead of guessing.
+		if ((known == 0)); then
+			echo "==> Skipped $path: this version of gh-release-flow does not know this file."
+			continue
+		fi
+		mkdir -p -- "$dir/${rel%/*}"
+		if [[ $rel == settings/* && $rel != *.json ]]; then
+			: >"$dir/$rel" # The file being there is the setting; its content is not used.
+		else
+			gh api "repos/$owner/.github/git/blobs/$sha" -H 'Accept: application/vnd.github.raw+json' >"$dir/$rel" ||
+				die "Unable to download $path from $owner/.github."
+		fi
+	done <<<"$listing"
+}
+
+# Prints the items $2... joined with the separator $1.
+join_list() {
+	local separator=$1 text='' item
+	shift
+	for item in "$@"; do
+		text+=$separator$item
+	done
+	printf '%s' "${text#"$separator"}"
+}
+
+# Stops init after the call for item $1 (counted from 0) of the items $3... failed with the message $2, first
+# saying which items were done before it and which were not, so a step never stops half done unannounced.
+stop_partway() {
+	local failed=$1 message=$2 done_items='' left_items='' i=0 item
+	shift 2
+	for item in "$@"; do
+		if ((i < failed)); then
+			done_items+=", $item"
+		else
+			left_items+=", $item"
+		fi
+		i=$((i + 1))
+	done
+	done_items=${done_items#, }
+	echo "    Done: ${done_items:-none}" >&2
+	echo "    Not done: ${left_items#, }" >&2
+	die "$message"
+}
+
+# Replaces {{owner}}, {{repo}} and {{year}} in the file $1 with $2, $3 and $4, and keeps every other byte.
+fill_placeholders() {
+	local text owner_tag='{{owner}}' repo_tag='{{repo}}' year_tag='{{year}}'
+	grep -Fq -e "$owner_tag" -e "$repo_tag" -e "$year_tag" -- "$1" || return 0
+	IFS= read -r -d '' text <"$1" || true
+	text=${text//"$owner_tag"/$2}
+	text=${text//"$repo_tag"/$3}
+	text=${text//"$year_tag"/$4}
+	printf '%s' "$text" >"$1"
+}
+
+# Sets up the repository in the current folder from <owner>/.github/defaults/, or, when the owner has no
+# defaults, writes the release workflow only, as init always did.
+init_workflow() {
+	local force=0 owner name
+	local -a default_files=() ruleset_files=() ruleset_names=() ruleset_targets=()
+	while (($#)); do
+		case $1 in
+		--force) force=1 ;;
+		*) die "init accepts only --force, not '$1'." ;;
+		esac
+		shift
+	done
+	[[ $RELEASE_WORKFLOW =~ ^[A-Za-z0-9._-]+\.ya?ml$ ]] ||
+		die "init needs RELEASE_WORKFLOW to be a file name ending in .yml or .yaml, not '$RELEASE_WORKFLOW'."
+	[[ $DEFAULT_BASE_BRANCH =~ ^[A-Za-z0-9._/-]+$ ]] ||
+		die "init cannot write DEFAULT_BASE_BRANCH '$DEFAULT_BASE_BRANCH' into a workflow."
+	require_gh
+
+	# 1. The defaults belong to origin's owner, or, without origin, to the signed-in user.
+	if [[ $(git rev-parse --is-inside-work-tree 2>/dev/null) == true ]] && git remote get-url origin >/dev/null 2>&1; then
+		use_push_repo origin
+		# Every gh api call goes to origin's host.
+		IFS=/ read -r GH_HOST owner name <<<"$PUSH_REPO"
+		export GH_HOST
+	else
+		owner=$(gh api user --jq .login) || owner=''
+		[[ -n $owner ]] || die "Unable to read your GitHub user. Run 'gh auth login' first."
+		name=''
+	fi
+	DEFAULTS_DIR=$(mktemp -d)
+	trap 'rm -rf -- "$DEFAULTS_DIR"' EXIT
+	if ! fetch_defaults "$owner"; then
+		echo "==> Found no defaults/ folder in $owner/.github, so init writes the release workflow only."
+		write_release_workflow "$force"
+		return
+	fi
+	init_from_defaults "$force" "$owner" "$name"
+}
+
+# Steps 2 to 7 of init with defaults, for --force $1, the owner $2 and the repository name $3 (empty without
+# origin): Git, the GitHub repository, the files, their commit and push, the settings and the rulesets, then
+# one summary line per step. Each outward action asks first, and declining skips that step only.
+init_from_defaults() {
+	local force=$1 owner=$2 name=$3 base=$DEFAULT_BASE_BRANCH dir=$DEFAULTS_DIR
+	local branch root folder rulesets remote_info year rel i file method path list push_line line
+	local have_base=0 branch_ruleset=0 codeql_held=0 kept_rulesets='' held_rulesets=''
+	local -a summary=() plan=() to_write=() kept=() pending=() push_args=() apply=() names=() api_args=() create=() parts=()
+	summary+=("Defaults|done, read from $owner/.github")
+
+	# 2. Git: a new repository on the base branch, or the current one, which must be on the base branch.
+	if [[ $(git rev-parse --is-inside-work-tree 2>/dev/null) == true ]]; then
+		summary+=('Git|already done')
+	else
+		# Inside a .git folder, git init would nest a repository in it.
+		if git rev-parse --git-dir >/dev/null 2>&1; then
+			die 'Not inside a Git working tree.'
+		fi
+		git init -q -b "$base"
+		echo "OK: Created a Git repository on branch $base."
+		summary+=("Git|done, created a repository on $base")
+	fi
+	root=$(git rev-parse --show-toplevel)
+	cd -- "$root"
+	branch=$(git symbolic-ref --quiet --short HEAD) || branch=''
+	[[ $branch == "$base" ]] ||
+		die "init sets up $base, but the current branch is ${branch:-a detached HEAD}. Switch to $base, then run init again."
+
+	# 3. The GitHub repository: origin's, or a new public one named after the folder.
+	if [[ -n $name ]]; then
+		summary+=("Repository|already done, $owner/$name")
+	else
+		folder=${root##*/}
+		echo '==> This folder has no origin remote.'
+		confirm "Create $owner/$folder (public)?" ||
+			die "init needs a GitHub repository. To use an existing one, run 'git remote add origin <its URL>', then run 'gh release-flow init' again."
+		gh repo create "$owner/$folder" --public --source . --remote origin ||
+			die "Unable to create $owner/$folder. If it exists, run 'git remote add origin <its URL>', then run 'gh release-flow init' again."
+		use_push_repo origin
+		IFS=/ read -r GH_HOST owner name <<<"$PUSH_REPO"
+		export GH_HOST
+		summary+=("Repository|done, created $owner/$name")
+	fi
+	rulesets=$(gh api "repos/$owner/$name/rulesets" --paginate --jq '.[] | [.target, .name] | @tsv') ||
+		die "Unable to list the rulesets of $owner/$name."
+	if [[ $'\n'$rulesets == *$'\n'branch$'\t'* ]]; then
+		branch_ruleset=1
+	fi
+	remote_info=$(git ls-remote --heads origin "refs/heads/$base") ||
+		die "Unable to query origin/$base."
+	if [[ -n $remote_info ]]; then
+		git fetch --quiet origin "+refs/heads/$base:refs/remotes/origin/$base" ||
+			die "Unable to fetch origin/$base."
+		have_base=1
+	fi
+
+	# 4. Files: the defaults with their placeholders filled, then the release workflow. Existing files are
+	# kept, and --force replaces those that differ.
+	year=$(date +%Y)
+	for rel in ${default_files[@]+"${default_files[@]}"}; do
+		fill_placeholders "$dir/files/$rel" "$owner" "$name" "$year"
+	done
+	mkdir -p "$dir/files/.github/workflows"
+	printf '%s\n' "$(release_workflow_template "$base")" >"$dir/files/.github/workflows/$RELEASE_WORKFLOW"
+	default_files+=(".github/workflows/$RELEASE_WORKFLOW")
+	for rel in "${default_files[@]}"; do
+		if [[ -L $rel ]] || [[ -e $rel && ! -f $rel ]]; then
+			kept+=("$rel")
+			plan+=("kept     $rel (not a regular file)")
+		elif [[ ! -e $rel ]]; then
+			to_write+=("$rel")
+			plan+=("new      $rel")
+		elif [[ $(git hash-object --no-filters -- "$rel") == "$(git hash-object --no-filters -- "$dir/files/$rel")" ]]; then
+			plan+=("same     $rel")
+		elif ((force)); then
+			to_write+=("$rel")
+			plan+=("replace  $rel")
+		else
+			kept+=("$rel")
+			plan+=("kept     $rel (yours differs; --force replaces it)")
+		fi
+	done
+	# A push needs every commit on origin's base branch; that is checked before any file is written.
+	if ((${#to_write[@]} > 0 && branch_ruleset == 0 && have_base == 1)); then
+		if ! git rev-parse --quiet --verify HEAD >/dev/null ||
+			[[ -n $(git rev-list -1 "HEAD..refs/remotes/origin/$base") ]]; then
+			die "origin/$base has commits that $base lacks. Pull them first ('git pull origin $base'), then run init again."
+		fi
+	fi
+	echo '==> Files:'
+	printf '    %s\n' "${plan[@]}"
+	for ((i = 0; i < ${#to_write[@]}; i++)); do
+		rel=${to_write[i]}
+		[[ $rel != */* ]] || mkdir -p -- "${rel%/*}"
+		cp -- "$dir/files/$rel" "$rel"
+	done
+	if ((${#to_write[@]})); then
+		echo "OK: Wrote ${#to_write[@]} file(s)."
+		list="done, wrote ${#to_write[@]}"
+	else
+		list='already done, every file is there'
+	fi
+	((${#kept[@]} == 0)) || list+="; kept ${kept[*]}"
+	summary+=("Files|$list")
+
+	# 5. Commit exactly the files written above and push the base branch, unless a branch ruleset would
+	# require a pull request for that push.
+	push_line=''
+	if ((${#to_write[@]} > 0 && branch_ruleset == 1)); then
+		echo "==> $owner/$name has a branch ruleset, so init does not push to $base."
+		echo '    The new files are written and uncommitted. Bring them in through a pull request.'
+		push_line='skipped, a branch ruleset exists: bring the new files in through a pull request'
+	elif ((${#to_write[@]} > 0)); then
+		echo "==> A push to $owner/$name $base would publish:"
+		echo "    (new)    chore: add repository defaults, with the ${#to_write[@]} new file(s) above"
+		if git rev-parse --quiet --verify HEAD >/dev/null; then
+			if ((have_base)); then
+				git log --format='    %h  %s' "refs/remotes/origin/$base..HEAD"
+			else
+				git log --format='    %h  %s' HEAD
+			fi
+		fi
+		if confirm "Commit and push these to $owner/$name $base?"; then
+			git add -- "${to_write[@]}" ||
+				die 'Unable to stage the new files; they are written and uncommitted.'
+			# The paths limit the commit to these files, whatever else is staged.
+			git commit -q -m 'chore: add repository defaults' -- "${to_write[@]}" ||
+				die 'Commit failed; the new files are written and uncommitted.'
+			# start-dev pulls the base branch, so a new one tracks origin.
+			git config --get "branch.$base.remote" >/dev/null || push_args=(-u)
+			git push --no-follow-tags ${push_args[@]+"${push_args[@]}"} origin "$base" ||
+				die "Push failed; the commit stays on the local $base. Push it, then run init again."
+			have_base=1
+			echo "OK: Pushed the defaults to $owner/$name $base."
+			push_line='done'
+		else
+			push_line='declined, the new files are written and uncommitted'
+		fi
+	fi
+	for rel in "${default_files[@]}"; do
+		if ((have_base == 0)) || ! git cat-file -e "refs/remotes/origin/$base:$rel" 2>/dev/null; then
+			pending+=("$rel")
+		fi
+	done
+	# With no file written in this run, there is nothing to commit; say whether the files are on origin.
+	if [[ -z $push_line ]]; then
+		push_line='already done, no file written in this run'
+		((${#pending[@]} == 0)) || push_line="skipped, no file written in this run; not on origin/$base yet: ${pending[*]}"
+	fi
+	summary+=("Push|$push_line")
+
+	# 6. Settings: one call per file, in a fixed order. They are not read back, so every run sends them.
+	for line in "${settings_calls[@]}"; do
+		read -r file method path <<<"$line"
+		[[ -e $dir/settings/$file ]] || continue
+		if [[ $file == code-scanning-default-setup.json ]] && ((have_base == 0)); then
+			codeql_held=1
+			continue
+		fi
+		apply+=("$line")
+		names+=("$file")
+	done
+	if ((${#apply[@]})); then
+		echo "==> Settings for $owner/$name: ${names[*]}"
+		if confirm 'Apply?'; then
+			for ((i = 0; i < ${#apply[@]}; i++)); do
+				read -r file method path <<<"${apply[i]}"
+				api_args=("repos/$owner/$name$path" --method "$method" --silent)
+				[[ $file != *.json ]] || api_args+=(--input "$dir/settings/$file")
+				gh api "${api_args[@]}" ||
+					stop_partway "$i" "Applying defaults/settings/$file to $owner/$name failed, so init stopped there. Fix the cause, then run init again." "${names[@]}"
+			done
+			echo "OK: Sent ${#apply[@]} setting(s). init does not compare them with the repository, so every run sends them again."
+			parts+=("done, sent ${#apply[@]} (every run sends them again)")
+		else
+			parts+=('declined')
+		fi
+	fi
+	if ((codeql_held)); then
+		echo "==> Held back CodeQL default setup until $base is on GitHub, so it has code to analyse. Run init again after the push."
+		parts+=("held back CodeQL default setup until $base is on GitHub")
+	fi
+	((${#parts[@]})) || parts+=('skipped, none in the defaults')
+	summary+=("Settings|$(join_list "; " "${parts[@]}")")
+
+	# 7. Rulesets, always last, created by name. A branch ruleset waits until the files are on the base
+	# branch, or it would require a pull request for the push that brings them.
+	parts=() names=()
+	for ((i = 0; i < ${#ruleset_files[@]}; i++)); do
+		if [[ $'\n'$rulesets$'\n' == *$'\t'"${ruleset_names[i]}"$'\n'* ]]; then
+			kept_rulesets+=", ${ruleset_names[i]}"
+		elif [[ ${ruleset_targets[i]} == branch ]] && ((${#pending[@]})); then
+			held_rulesets+=", ${ruleset_names[i]}"
+		else
+			create+=("$i")
+			names+=("${ruleset_names[i]}")
+		fi
+	done
+	[[ -z $kept_rulesets ]] || echo "==> Kept ruleset ${kept_rulesets#, }: $owner/$name already has a ruleset by that name."
+	if [[ -n $held_rulesets ]]; then
+		echo "==> Held back ruleset ${held_rulesets#, }: these files are not on origin/$base yet: ${pending[*]}"
+		echo '    Commit and push them, or merge them through a pull request, then run init again.'
+		parts+=("held back ${held_rulesets#, } until the files are on $base")
+	fi
+	if ((${#create[@]})); then
+		echo "==> Rulesets to create on $owner/$name: $(join_list ", " "${names[@]}")"
+		if confirm 'Create?'; then
+			for ((i = 0; i < ${#create[@]}; i++)); do
+				file=${ruleset_files[${create[i]}]}
+				gh api "repos/$owner/$name/rulesets" --method POST --input "$dir/$file" --silent ||
+					stop_partway "$i" "Creating the ruleset ${names[i]} from defaults/$file on $owner/$name failed, so init stopped there. Fix the cause, then run init again." "${names[@]}"
+			done
+			echo "OK: Created ruleset $(join_list ", " "${names[@]}")."
+			parts+=("done, created $(join_list ", " "${names[@]}")")
+		else
+			parts+=("declined $(join_list ", " "${names[@]}")")
+		fi
+	fi
+	[[ -z $kept_rulesets ]] || parts+=("already done, kept ${kept_rulesets#, }")
+	((${#parts[@]})) || parts+=('skipped, none in the defaults')
+	summary+=("Rulesets|$(join_list "; " "${parts[@]}")")
+
+	echo
+	echo '==> Summary:'
+	for line in "${summary[@]}"; do
+		printf '    %-11s %s\n' "${line%%|*}:" "${line#*|}"
+	done
 }
 
 usage() {

@@ -15,13 +15,22 @@ workflow succeeds.
 The extension does not create a tag or GitHub Release itself. That remains the
 responsibility of your release workflow.
 
+Its `init` command also starts new repositories: run in a project folder, it
+creates the GitHub repository and gives it the files, settings and rulesets
+kept in your account's [repository defaults](#repository-defaults).
+
 ## Requirements
 
 - Bash and Git.
 - [GitHub CLI](https://cli.github.com/) 2.40 or newer, installed and
   authenticated.
 - A Git repository with an `origin` remote and a `main` branch, unless you
-  configure another base branch.
+  configure another base branch. With
+  [repository defaults](#repository-defaults), `init` creates both.
+- For `init` with repository defaults, admin access to the repository, which
+  its settings and rulesets need. When Git pushes over HTTPS with GitHub CLI's
+  credentials, the token also needs the `workflow` scope to push the workflow
+  files; `gh auth refresh -s workflow` adds it.
 - No branch named `dev`. Git cannot hold both `dev` and `dev/v1.2.3`.
 - Release branches pushed to the repository that receives the PR. `merge`
   refuses PRs from forks, because their release workflow cannot publish.
@@ -56,8 +65,8 @@ gh release-flow upgrade
 GitHub CLI checks for a newer version once a day when the extension runs and
 prints an upgrade notice when one is available.
 
-Optionally add user-wide Make targets, so `make start-dev`, `make open-pr` and
-`make merge-release` work in every folder:
+Optionally add user-wide Make targets, so `make init`, `make start-dev`,
+`make open-pr` and `make merge-release` work in every folder:
 
 ```bash
 gh release-flow setup-make
@@ -73,7 +82,8 @@ gh release-flow version
 ## Quick start
 
 ```bash
-# In a new repository, write a release workflow and commit it to main.
+# In a new project folder, set up the repository from your account's defaults.
+# Without defaults, this writes the release workflow; commit it to main.
 gh release-flow init
 
 # Update main and create dev/v1.2.3.
@@ -93,16 +103,89 @@ branches must use `dev/v1.2.3` or `dev/v1.2.3-rc.1` format.
 
 ### `init [--force]`
 
-Writes a known-good release workflow into a new repository, at
-`.github/workflows/release.yml`, or at the file named by `RELEASE_WORKFLOW`.
-It works from any folder inside the repository, writes at its root, and never
-commits.
+Sets up the repository in the current folder. With
+[repository defaults](#repository-defaults) in your account's `.github`
+repository, it creates the GitHub repository when there is none and gives it
+the default files, settings and rulesets. Without them, it writes the release
+workflow only, as it always did.
+
+```bash
+gh release-flow init
+gh release-flow init --force
+```
+
+It runs these steps in order. A step that fails stops the run. Answering no to
+a question skips that step only, except where noted. Pressing Enter, or running
+without a terminal, answers no.
+
+1. **Defaults.** It works out the owner: the owner of the `origin` remote, or,
+   without `origin`, the account GitHub CLI is signed in to. It then downloads
+   `<owner>/.github/defaults/` through the GitHub API. When there is no such
+   folder, it says so, writes the release workflow as described under
+   [Without defaults](#without-defaults), and stops there.
+2. **Git.** Outside a Git working tree, it runs `git init -b main` (the base
+   branch) in the current folder. The current branch must be the base branch;
+   otherwise it stops and asks you to switch.
+3. **GitHub repository.** It uses the repository behind `origin`. Without
+   `origin`, it asks `Create <owner>/<folder> (public)? [y/N]` and runs
+   `gh repo create <owner>/<folder> --public --source . --remote origin`. A no
+   stops the run: link an existing repository with
+   `git remote add origin <URL>`, then run `init` again.
+4. **Files.** It copies each file under `defaults/files/` that the repository
+   does not have, with its placeholders filled, then writes the release
+   workflow from its built-in template. It lists each file as new, same or
+   kept. A file you already have that differs is kept; `--force` replaces it.
+5. **Commit and push.** If it wrote any file, it lists every commit a push of
+   the base branch would publish, the new one and your own unpushed commits
+   included, and asks `Commit and push these to <owner>/<repo> main? [y/N]`.
+   On yes, it commits exactly the files it wrote, as
+   `chore: add repository defaults`, and pushes the base branch, which then
+   tracks `origin` if it tracked nothing. Nothing else is committed, even if it
+   is staged. When `origin`'s base branch has commits that yours lacks, `init`
+   stops before writing any file: pull first. When the repository already has a
+   branch ruleset, it does not push: the files stay written and uncommitted,
+   for you to bring in through a pull request.
+6. **Settings.** It lists the settings files and asks `Apply? [y/N]`, then
+   makes one API call per file. Settings are not read back and compared:
+   every run asks again and sends them again, which changes nothing that is
+   already set. CodeQL default setup is held back until the base branch is on
+   GitHub, so it has code to analyse.
+7. **Rulesets.** Always last. It lists the rulesets the repository does not
+   have by name and asks `Create? [y/N]`. A ruleset with the same name is
+   kept, never updated. A branch ruleset is held back while any of the
+   default files is not on `origin`'s base branch, because it would then
+   require a pull request for the push that brings them; run `init` again once
+   they are there. Tag rulesets do not wait.
+
+The run ends with one summary line per step: done, already done, skipped,
+held back or declined. A second run on a finished repository writes no file,
+creates nothing, and sends the settings again. If a settings or ruleset call
+fails, `init` stops and says which calls were made and which were not; run it
+again once the cause is fixed.
+
+`make init`, from [`setup-make`](#setup-make), runs `gh release-flow init`.
+Run `gh release-flow init --force` directly to replace files.
+
+#### Without defaults
+
+Without `<owner>/.github`, or without its `defaults/` folder, `init` writes a
+known-good release workflow, at `.github/workflows/release.yml`, or at the
+file named by `RELEASE_WORKFLOW`. It needs a Git working tree, works from any
+folder inside the repository, writes at its root, and never commits. It does
+not run `git init` or create a GitHub repository.
 
 ```bash
 gh release-flow init
 git add .github/workflows/release.yml
 git commit -m 'ci: add release workflow'
 ```
+
+An existing file with the same content is left alone. A different one is
+refused, so your edits are never lost, until you review it and pass `--force`
+to replace it. With defaults, a different release workflow is kept and listed
+as kept, like any other file.
+
+#### The release workflow
 
 The workflow runs when a pull request into the base branch
 (`DEFAULT_BASE_BRANCH`, `main` by default) is merged. It does nothing unless
@@ -117,12 +200,9 @@ the PR came from a `dev/vX.Y.Z` branch in the same repository. It then:
 
 It publishes no assets, so add `gh release create` arguments such as file
 paths if you ship any. Commit the workflow to the base branch before the first
-`start-dev`, so GitHub runs it for the release PR.
-
-An existing file with the same content is left alone. A different one is
-refused, so your edits are never lost, until you review it and pass `--force`
-to replace it. `RELEASE_WORKFLOW` must be a file name ending in `.yml` or
-`.yaml`.
+`start-dev`, so GitHub runs it for the release PR; with defaults, `init`
+offers to commit and push it. `RELEASE_WORKFLOW` must be a file name ending in
+`.yml` or `.yaml`.
 
 ### `start-dev [version]`
 
@@ -238,13 +318,15 @@ Installs user-wide Make targets that run the commands from any folder:
 
 | Target | Runs |
 | --- | --- |
+| `make init` | `gh release-flow init` |
 | `make start-dev` | `gh release-flow start-dev` |
 | `make open-pr` | `gh release-flow open-pr` |
 | `make merge-release` | `gh release-flow merge-release` |
 | `make rf-version` | `gh release-flow version` |
 | `make rf-upgrade` | `gh release-flow upgrade` |
 
-Variables pass through, for example `make start-dev VERSION=v1.2.3`.
+Variables pass through, for example `make start-dev VERSION=v1.2.3`. Command
+options do not, so run `gh release-flow init --force` directly.
 
 ```bash
 gh release-flow setup-make
@@ -267,9 +349,9 @@ Run it again at any time to rewrite both files. It says when a new terminal
 is needed to load the changes. A `release-flow.mk` that `setup-make` did not
 write is replaced only after you confirm.
 
-If a project Makefile already defines one of these targets, make warns
-"overriding recipe" on every run there; delete those targets from the project
-Makefile. Make cannot load files from a home path that contains spaces, so
+If a project Makefile already defines one of these targets, such as its own
+`init`, make warns "overriding recipe" on every run there; delete those targets
+from the project Makefile. Make cannot load files from a home path that contains spaces, so
 `setup-make` refuses to run there.
 
 ### `upgrade`
@@ -314,6 +396,133 @@ Usage:
   gh release-flow help
 ```
 
+## Repository defaults
+
+`init` sets up new repositories from defaults that belong to your account,
+not to gh-release-flow. They live in the `defaults/` folder of the account's
+`.github` repository, `<owner>/.github`, which GitHub already reads for an
+account's default community health files. Edit them there, in one place, and
+every later `init` uses them. `init` downloads them through the GitHub API
+and reads them as data; it never runs anything from them.
+
+```text
+defaults/
+  files/                              copied into the repository, path for path
+    LICENSE
+    SECURITY.md
+    .github/CODEOWNERS
+    .github/workflows/check.yml
+  settings/                           one file per GitHub API call
+    repo.json
+    actions-workflow.json
+    vulnerability-alerts
+    automated-security-fixes
+    private-vulnerability-reporting
+    immutable-releases
+    code-scanning-default-setup.json
+  rulesets/                           one ruleset per file
+    main.json
+    release-tags.json
+```
+
+The owner is the owner of the `origin` remote, or, without `origin`, the
+account GitHub CLI is signed in to. Without `<owner>/.github`, or without its
+`defaults/` folder, `init` [writes the release workflow only](#without-defaults).
+Any of the three folders, and any file in them, may be left out. A file
+outside them is reported and skipped.
+
+### Files
+
+Every file under `defaults/files/` is copied to the same path in the
+repository, unless the repository already has a file there. These
+placeholders are replaced in every copied file, and nothing else is
+templated:
+
+| Placeholder | Replaced with |
+| --- | --- |
+| `{{owner}}` | The repository owner, such as `octocat`. |
+| `{{repo}}` | The repository name. |
+| `{{year}}` | The current year, such as `2026`. |
+
+A file without placeholders is copied byte for byte. Files are copied as
+regular files: symbolic links are refused, and the executable bit is not
+kept. The release workflow always comes from gh-release-flow's own template,
+so `defaults/files/.github/workflows/release.yml`, or the file named by
+`RELEASE_WORKFLOW`, is skipped.
+
+### Settings
+
+Each file in `defaults/settings/` is named after the API call it makes. A
+`.json` file is sent as-is as the request body. A file without an extension
+means a `PUT` without a body, which turns that feature on, so leave it empty.
+A missing file leaves that setting alone. A file name this version of
+gh-release-flow does not know is reported and skipped, so an older version
+never guesses what a newer file means.
+
+| File | Call |
+| --- | --- |
+| `repo.json` | `PATCH /repos/{owner}/{repo}` |
+| `actions-workflow.json` | `PUT /repos/{owner}/{repo}/actions/permissions/workflow` |
+| `vulnerability-alerts` | `PUT /repos/{owner}/{repo}/vulnerability-alerts` |
+| `automated-security-fixes` | `PUT /repos/{owner}/{repo}/automated-security-fixes` |
+| `private-vulnerability-reporting` | `PUT /repos/{owner}/{repo}/private-vulnerability-reporting` |
+| `immutable-releases` | `PUT /repos/{owner}/{repo}/immutable-releases` |
+| `code-scanning-default-setup.json` | `PATCH /repos/{owner}/{repo}/code-scanning/default-setup` |
+
+The body of each `.json` file is the one the GitHub REST API documents for
+that call, for example:
+
+```json
+{
+  "allow_merge_commit": true,
+  "allow_squash_merge": false,
+  "allow_rebase_merge": false,
+  "has_wiki": false
+}
+```
+
+### Rulesets
+
+Each `.json` file in `defaults/rulesets/` holds one ruleset, in the shape that
+`POST /repos/{owner}/{repo}/rulesets` accepts, with a top-level `name` and a
+`target` of `branch` or `tag`. `init` creates each ruleset the repository does
+not have by name. One with the same name is kept and never updated, so change
+an existing ruleset on GitHub, or delete it there and run `init` again.
+
+```json
+{
+  "name": "release tags",
+  "target": "tag",
+  "enforcement": "active",
+  "bypass_actors": [],
+  "conditions": { "ref_name": { "include": ["refs/tags/v*"], "exclude": [] } },
+  "rules": [{ "type": "deletion" }, { "type": "update" }]
+}
+```
+
+To start from a ruleset you already use, open it in a repository's settings
+under Rules, then Rulesets, and choose Export ruleset. In the exported file,
+delete `id`, `source_type` and `source`: they describe the ruleset it was
+exported from, and the create call does not take them. Keep `name`, `target`,
+`enforcement`, `bypass_actors`, `conditions` and `rules`. A ruleset read with
+`gh api` also carries `node_id`, `_links`, `created_at`, `updated_at` and
+`current_user_can_bypass`; delete those too. Use `~DEFAULT_BRANCH` in
+`conditions.ref_name.include` to target whatever the default branch is.
+
+### Order
+
+`init` applies the defaults in this order, so the base branch is never
+protected before the files it needs are on it:
+
+1. The files, then their commit and push.
+2. The settings, in the order of the table above. GitHub turns on automated
+   security fixes only after vulnerability alerts. CodeQL default setup comes
+   last, after the push, so it has code to analyse; while the base branch is
+   not on GitHub, it is held back.
+3. The rulesets. Branch rulesets are created only once every default file is
+   on the base branch on GitHub; otherwise they would require a pull request
+   for the push that brings the files. Tag rulesets do not wait.
+
 ## Generated changelog
 
 `open-pr` builds the pull request body from Git history. It selects the nearest
@@ -355,7 +564,7 @@ All configuration is provided through environment variables.
 
 | Variable | Default | Used by | Purpose |
 | --- | --- | --- | --- |
-| `DEFAULT_BASE_BRANCH` | `main` | all commands | Branch from which releases start and into which release PRs merge; `init` writes it into the workflow trigger. |
+| `DEFAULT_BASE_BRANCH` | `main` | all commands | Branch from which releases start and into which release PRs merge; `init` writes it into the workflow trigger and, with defaults, creates, commits to and pushes it. |
 | `RELEASE_WORKFLOW` | `release.yml` | `merge`, `init` | Workflow file or name passed to `gh run list --workflow`; `init` writes this file name under `.github/workflows/`. |
 | `VERSION` | prompt (shows the latest release tag) | `start-dev` | Version used when no command argument is provided. |
 | `REPO` | repository the branch is pushed to | `open-pr`, `merge` | Repository targeted by GitHub CLI, exported as `GH_REPO`; also used for changelog links. |
@@ -389,6 +598,10 @@ use the current checkout and its configured remotes.
 - Branches are deleted only after a successful release workflow and an ancestry
   check on the updated base branch.
 - Both `open-pr` and `merge` are resumable by running the same command again.
+- `init` asks before each outward action, never replaces a file without
+  `--force`, commits only the files it wrote in that run, and never pushes
+  over a branch ruleset. When a settings or ruleset call fails, it stops and
+  lists what was applied and what was not. Running it again is safe.
 
 ## Shell function map
 
@@ -414,7 +627,14 @@ commands above; these internal functions implement that interface.
 | `open_pr` | Synchronizes the release branch, creates or updates its PR, and monitors checks. |
 | `merge_release` | Validates and merges the PR, watches the release workflow, and cleans up branches. |
 | `release_workflow_template` | Prints the release workflow for a base branch. |
-| `init_workflow` | Writes the release workflow into the repository, refusing to replace a different file without `--force`. |
+| `confirm` | Asks a `[y/N]` question on the terminal. |
+| `write_release_workflow` | Writes the release workflow into the repository, refusing to replace a different file without `--force`: `init` without defaults. |
+| `fetch_defaults` | Downloads `<owner>/.github/defaults/`, validates its paths and rulesets, and reports unknown files. |
+| `join_list` | Joins items with a separator. |
+| `stop_partway` | Stops `init` after a failed call, listing the calls made and not made. |
+| `fill_placeholders` | Replaces `{{owner}}`, `{{repo}}` and `{{year}}` in a copied file. |
+| `init_workflow` | Validates `init`'s arguments, finds the owner and their defaults, and falls back to the release workflow alone without them. |
+| `init_from_defaults` | Runs `init` with defaults: Git, the GitHub repository, files, commit and push, settings, rulesets, and the summary. |
 | `setup_make` | Writes the user-wide Make targets and `make` shell function, and adds them to the shell profile. |
 | `usage` | Prints command-line usage. |
 | `main` | Validates arguments, resolves aliases, and dispatches commands. |
@@ -426,9 +646,9 @@ flow. [`setup-make`](#setup-make) installs targets that delegate to it for
 every folder. A single project can instead define its own:
 
 ```make
-.PHONY: start-dev open-pr merge-release
+.PHONY: init start-dev open-pr merge-release
 
-start-dev open-pr merge-release:
+init start-dev open-pr merge-release:
 	gh release-flow $@
 ```
 
@@ -441,7 +661,7 @@ make test
 ```
 
 It creates temporary local repositories and a fake `gh` executable to exercise
-release workflow generation, branch creation, PR creation and body refresh, changelog rendering, stale and
+release workflow generation, repository setup from a fake defaults repository, branch creation, PR creation and body refresh, changelog rendering, stale and
 diverged branch refusals, merge guards, the merge itself, already-merged
 recovery, safe branch cleanup, the Make targets, and version normalization. It ignores your Git
 configuration and never modifies the working repository.
