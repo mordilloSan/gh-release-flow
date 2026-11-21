@@ -2,7 +2,15 @@
 set -euo pipefail
 # Ignore the caller's Git and tool settings: a hook's GIT_DIR would point every git call at the real repo.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE REPO PR VERSION CONFIRM DEFAULT_BASE_BRANCH RELEASE_WORKFLOW GITHUB_REPOSITORY
+# Under make test, the make variables would turn the tests' own make runs into sub-makes that print "Entering directory".
+unset MAKELEVEL MAKEFLAGS MFLAGS
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+# The status tag, coloured only on a terminal and never with NO_COLOR set.
+if [[ -t 1 && -z ${NO_COLOR-} ]]; then
+	ok_tag=$'\033[90m[\033[38;5;154m  OK  \033[90m]\033[0m'
+else
+	ok_tag='[  OK  ]'
+fi
 
 exec </dev/null # prompts see a closed stdin unless a step feeds an answer
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -309,10 +317,10 @@ make_function() {
 	(cd "$test_root/$1" && HOME=$home MAKEFILES=$targets_file \
 		bash -c '. "$HOME/.config/make/release-flow.sh" && make "$@"' make "${@:2}")
 }
-targets_line='release-flow: make start-dev | open-pr | merge-release | rf-version | rf-upgrade'
-# make help ends with the targets; plain make without a Makefile prints only them; other runs are untouched.
+targets_line=' release-flow:  start-dev  open-pr  merge-release  rf-version  rf-upgrade'
+# make help ends with a blank line and the targets; plain make without a Makefile prints only them; other runs are untouched.
 [[ $(make_function empty) == "$targets_line" && $(make_function empty help) == "$targets_line" ]]
-[[ $(make_function project help) == "project help"$'\n'"$targets_line" ]]
+[[ $(make_function project help) == "project help"$'\n\n'"$targets_line" ]]
 [[ $(make_function project where) == Makefile ]]
 # Plain make behaves like make help when the default goal is help, set explicitly or by being first.
 mkdir -p "$test_root/helpdefault" "$test_root/helpfirst" "$test_root/otherdefault" "$test_root/helpfails"
@@ -320,8 +328,8 @@ printf '.DEFAULT_GOAL := help\nbuild:\n\t@echo building\nhelp:\n\t@echo project 
 cp "$test_root/project/Makefile" "$test_root/helpfirst/Makefile"
 printf 'build:\n\t@echo building\nhelp:\n\t@echo project help\n' >"$test_root/otherdefault/Makefile"
 printf '.DEFAULT_GOAL := help\nhelp:\n\t@echo project help\n\t@exit 1\n' >"$test_root/helpfails/Makefile"
-[[ $(make_function helpdefault) == "project help"$'\n'"$targets_line" ]]
-[[ $(make_function helpfirst) == "project help"$'\n'"$targets_line" ]]
+[[ $(make_function helpdefault) == "project help"$'\n\n'"$targets_line" ]]
+[[ $(make_function helpfirst) == "project help"$'\n\n'"$targets_line" ]]
 # Any other default goal, or any argument besides help, is untouched.
 [[ $(make_function otherdefault) == building ]]
 [[ $(make_function helpdefault build) == building ]]
@@ -414,4 +422,4 @@ done
 	grep -Fq 'https://github.com/acme/other/compare/v0.1.0...v0.4.0' "$PR_BODY_FILE"
 	rm -f "$PR_BODY_FILE"
 )
-echo 'tests passed'
+printf ' %s tests passed in %ss\n' "$ok_tag" "$SECONDS"
