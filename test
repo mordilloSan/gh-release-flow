@@ -392,8 +392,21 @@ fails_with 'Not inside a Git working tree' bash -c "cd '$test_root' && '$script_
 # The generated workflow passes actionlint when it is installed.
 if command -v actionlint >/dev/null; then (cd "$init_repo" && actionlint); fi
 
-[[ $("$script_dir/gh-release-flow" version) == 'gh-release-flow v'* ]]
-[[ $("$script_dir/gh-release-flow" --version) == 'gh-release-flow v'* ]]
+# version is the release tag of the tool's own clone, and unknown for a copy outside one.
+tool_clone=$test_root/tool
+mkdir -p "$tool_clone/nested" "$test_root/loose"
+git -C "$tool_clone" init -q
+cp "$script_dir/gh-release-flow" "$tool_clone/"
+cp "$script_dir/gh-release-flow" "$tool_clone/nested/"
+cp "$script_dir/gh-release-flow" "$test_root/loose/"
+git -C "$tool_clone" -c user.name=t -c user.email=t@example.com commit --allow-empty -qm 'release'
+git -C "$tool_clone" tag v3.2.1
+[[ $(cd "$repo" && "$tool_clone/gh-release-flow" version) == 'gh-release-flow v3.2.1' ]]
+[[ $(GIT_DIR=$repo/.git "$tool_clone/gh-release-flow" --version) == 'gh-release-flow v3.2.1' ]]
+git -C "$tool_clone" -c user.name=t -c user.email=t@example.com commit --allow-empty -qm 'later'
+[[ $("$tool_clone/gh-release-flow" version) == 'gh-release-flow v3.2.1-1-g'* ]]
+[[ $("$tool_clone/nested/gh-release-flow" version) == 'gh-release-flow unknown' ]]
+[[ $("$test_root/loose/gh-release-flow" version) == 'gh-release-flow unknown' ]]
 if "$script_dir/gh-release-flow" version extra >/dev/null 2>&1; then
 	echo 'version accepted an argument' >&2
 	exit 1
