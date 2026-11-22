@@ -527,14 +527,24 @@ protected before the files it needs are on it:
 
 ## Generated changelog
 
-`open-pr` builds the pull request body from Git history. It selects the nearest
+`open-pr` builds the pull request body from Git history, and the release
+workflow publishes that body as the release notes. It selects the nearest
 reachable release tag, shaped like `v1.2.3` or `v1.2.3-rc.1`, other than the
-current version, and includes non-merge commits
-from that tag through `HEAD`. With no previous tag, it uses the full history.
+current version, and includes non-merge commits from that tag through `HEAD`.
+With no previous tag, it uses the full history. Merge commits, commits authored
+by `github-actions[bot]`, and commits whose subject is `changelog` are omitted.
 
-Conventional Commit prefixes are grouped as follows:
+The body has three parts: **What's Changed**, **New Contributors** when there
+are any, and a **Full Changelog** link. It has no introduction: to add one,
+edit the published release on GitHub. An immutable release keeps its notes and
+title editable.
 
-| Prefix | PR section |
+### Sections
+
+Each commit is listed once, under the section of its
+[Conventional Commit](https://www.conventionalcommits.org/) type:
+
+| Prefix | Section |
 | --- | --- |
 | `feat` | Features |
 | `fix` | Bug Fixes |
@@ -548,15 +558,55 @@ Conventional Commit prefixes are grouped as follows:
 | `chore` | Chores |
 | anything else | Other Changes |
 
-Scoped prefixes such as `feat(api):` are supported, and so is the
-breaking-change marker, as in `feat!:`. Each entry includes the subject, linked
-short commit hash, and author name as plain text. Author names follow the
-repository's `.mailmap`. Merge commits, commits authored by
-`github-actions[bot]`, and commits whose subject is `changelog` are omitted,
-both from the entries and from the contributors. The body ends with unique
-contributors and a full-changelog link.
+Two sections come first:
 
-The repository used in commit links is resolved from `REPO`, then
+- **Breaking Changes** lists every commit marked `!` (as in `feat!:`) or with
+  a `BREAKING CHANGE:` footer, by the footer's text when it has one. The
+  commit is also listed under its type.
+- **Security** lists every commit with a `Security:` footer, in place of its
+  type's section. The footer holds either a GitHub security advisory id, such
+  as `GHSA-c2f3-g4h5-j6m7`, or a severity: `low`, `moderate` (or `medium`),
+  `high` or `critical`. For an advisory, the entry links it and shows its
+  severity and the people it credits as reporter or finder, read from GitHub;
+  an advisory GitHub cannot show keeps its link without a severity. Any other
+  value is listed under the commit's type, with a warning.
+
+### Entries
+
+An entry is the commit's subject without its prefix, with the scope in bold:
+`feat(api): add widget` becomes `**api**: add widget`. In parentheses it links
+the pull request the commit came through, other than a release PR, or else the
+commit; then any issues its footers name with `Fixes`, `Closes`, `Resolves` or
+`Refs`, as in `Fixes #12, #21`.
+
+The author is named as `@login` only when it is someone other than the
+repository's owner, and never for a bot. A commit whose author GitHub cannot
+name is listed without one. **New Contributors** names each author with no
+commit in the previous release, and the change that brought them; a first
+release has no such section. GitHub shows the avatars of the accounts a
+release mentions, so a release made by the owner alone shows none.
+
+A commit with every footer:
+
+```text
+fix(auth): check the session token
+
+Why the change was needed, in as many paragraphs as it takes.
+
+Security: GHSA-c2f3-g4h5-j6m7
+Fixes #12
+BREAKING CHANGE: sessions saved before this release are signed out
+```
+
+`git commit --trailer 'Security: moderate'` adds a footer without editing the
+message.
+
+### Lookups
+
+Pull requests, logins and advisories come from the GitHub API, one call per
+commit and one per new author, so a release with many commits takes a few
+seconds longer. Without an answer, an entry keeps its commit link and no author.
+The repository used in links and lookups is resolved from `REPO`, then
 `GITHUB_REPOSITORY`, then the repository the branch is pushed to. Links always
 point at github.com.
 
@@ -623,7 +673,7 @@ commands above; these internal functions implement that interface.
 | `read_version` | Reads, normalizes, and validates a version, then derives its release branch. |
 | `read_release_branch` | Validates the current branch and extracts its version. |
 | `previous_tag` | Finds the nearest reachable release tag. |
-| `generate_changelog` | Groups commits, renders contributors, and adds compare or release links. |
+| `generate_changelog` | Sorts commits into sections, reads their footers, looks up pull requests, logins and advisories, and adds the new contributors and the compare or release link. |
 | `generate_pr_body` | Resolves repository and tag context and writes the temporary PR body. |
 | `start_dev` | Updates the base branch and checks out or creates the release branch. |
 | `open_pr` | Synchronizes the release branch, creates or updates its PR, and monitors checks. |

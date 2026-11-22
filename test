@@ -25,6 +25,11 @@ merge_log=$test_root/gh-merge
 release_log=$test_root/gh-release-edit
 api_log=$test_root/gh-api
 rulesets_file=$test_root/gh-rulesets
+# The changelog's lookups: "email<TAB>login", "subject<TAB>PR number" and "GHSA id<TAB>severity<TAB>reporters".
+export GH_LOGINS=$test_root/gh-logins GH_COMMIT_PRS=$test_root/gh-commit-prs GH_ADVISORIES=$test_root/gh-advisories
+printf 'tester@example.com\towner\nann@example.com\tann\nbot@dependabot.com\tdependabot[bot]\n' >"$GH_LOGINS"
+printf 'fix(ui): close the menu\t21\n' >"$GH_COMMIT_PRS"
+printf 'GHSA-c2f3-g4h5-j6m7\thigh\t@rep\nGHSA-m7j6-h5g4-f3c2\tmedium\t\n' >"$GH_ADVISORIES"
 mkdir -p "$repo" "$bin"
 
 git -C "$repo" init -q
@@ -71,7 +76,7 @@ if [[ $1 == api ]]; then
 		esac
 		shift
 	done
-	echo "$method $endpoint${input:+ $(tr -d '\n' <"$input")}" >>"$GH_API_LOG"
+	echo "$method $endpoint${input:+ $(tr -d '\n' <"$input")}" >>"${GH_API_LOG:-/dev/null}"
 	if [[ -n ${GH_FAIL:-} && $endpoint == *"$GH_FAIL" ]]; then
 		echo 'gh: Validation Failed (HTTP 422)' >&2
 		exit 1
@@ -108,6 +113,21 @@ if [[ $1 == api ]]; then
 		fi
 		;;
 	'GET repos/owner/project/rulesets') cat -- "$GH_RULESETS" 2>/dev/null || true ;;
+	'GET repos/owner/project/commits/'*/pulls)
+		sha=${endpoint#repos/owner/project/commits/}
+		awk -F '\t' -v s="$(git log -1 --format=%s "${sha%/pulls}")" '$1 == s { print $2 }' "$GH_COMMIT_PRS"
+		;;
+	'GET repos/owner/project/commits/'*)
+		awk -F '\t' -v e="$(git log -1 --format=%aE "${endpoint##*/}")" '$1 == e { print $2 }' "$GH_LOGINS"
+		;;
+	'GET repos/owner/project/security-advisories/'*)
+		advisory=$(awk -F '\t' -v id="${endpoint##*/}" '$1 == id { print $2 "\t" $3 }' "$GH_ADVISORIES")
+		if [[ -z $advisory ]]; then
+			echo 'gh: Not Found (HTTP 404)' >&2
+			exit 1
+		fi
+		printf '%s\n' "$advisory"
+		;;
 	'POST repos/owner/project/rulesets')
 		ruleset_fields "$(<"$input")"
 		printf '%s\t%s\n' "$target" "$name" >>"$GH_RULESETS"
@@ -235,11 +255,14 @@ branch_gone() {
 
 flow open-pr >/dev/null
 [[ -s $body ]]
-grep -Fq '###  Bug Fixes' "$body"
-grep -Fq 'fix: preserve | pipe and \backslash' "$body"
-grep -Fq 'by John Smith' "$body"
-grep -Fq '* John Smith' "$body"
+grep -Fq "## What's Changed" "$body"
+grep -Fq '### Bug Fixes' "$body"
+grep -Fq -- '- preserve | pipe and \backslash ([' "$body"
 grep -Fq 'https://github.com/owner/project/commit/' "$body"
+if grep -Fq 'by @owner' "$body" || grep -Fq 'by John Smith' "$body" || grep -Fq 'Contributors' "$body"; then
+	echo "the repository's owner was named, or a contributors list was written" >&2
+	exit 1
+fi
 if grep -Fq 'J. Smith' "$body" || grep -Fq 'github-actions[bot]' "$body"; then
 	echo 'a mapped or filtered author was credited' >&2
 	exit 1
@@ -263,15 +286,45 @@ git -C "$repo" commit --allow-empty -qm 'Tidy things'
 : >"$body"
 flow open-pr >/dev/null
 body_text=$(<"$body")
-[[ $body_text == *$'###  Features\n\n* feat(api): add widget'* ]]
-[[ $body_text == *$'###  Documentation\n\n* docs: explain widget'* ]]
-[[ $body_text == *$'by John Smith\n* feat!: drop old option'* ]]
-[[ $body_text == *$'###  Other Changes\n\n* Tidy things'* ]]
+[[ $body_text == *$'### Features\n\n- **api**: add widget ('* ]]
+[[ $body_text == *$'### Documentation\n\n- explain widget ('* ]]
+[[ $body_text == *$'### Breaking Changes\n\n- drop old option ('* ]]
+[[ $body_text == *$')\n- drop old option ('* ]]
+[[ $body_text == *$'### Other Changes\n\n- Tidy things ('* ]]
 git -C "$repo" commit --allow-empty -qm 'perf: pushed with plain git'
 git -C "$repo" push -q
 : >"$body"
 flow open-pr >/dev/null
-grep -Fq 'perf: pushed with plain git' "$body"
+grep -Fq -- '- pushed with plain git (' "$body"
+
+# Footers mark security and breaking changes and link issues; others are named, the owner and bots are not.
+git -C "$repo" commit --allow-empty -qm 'fix(ui): close the menu' -m 'Fixes #12, #21' --author='Ann Lee <ann@example.com>'
+git -C "$repo" commit --allow-empty -qm 'feat(cli): add an option' --author='Ann Lee <ann@example.com>'
+git -C "$repo" commit --allow-empty -qm 'fix(auth): check the token' -m 'Security: GHSA-c2f3-g4h5-j6m7'
+git -C "$repo" commit --allow-empty -qm 'fix(tls): set a minimum version' -m $'Why.\n\nSecurity: Moderate\nRefs #30'
+git -C "$repo" commit --allow-empty -qm 'fix: read the footer' -m 'Security: maybe'
+git -C "$repo" commit --allow-empty -qm 'fix(web): escape the name' -m 'Security: GHSA-m7j6-h5g4-f3c2'
+git -C "$repo" commit --allow-empty -qm 'fix(db): unknown advisory' -m 'Security: GHSA-2222-3333-4444'
+git -C "$repo" commit --allow-empty -qm 'feat(cfg): rename the option' -m 'BREAKING CHANGE: the old name is refused'
+git -C "$repo" commit --allow-empty -qm 'build(deps): bump x' --author='dependabot[bot] <bot@dependabot.com>'
+: >"$body"
+out=$(flow open-pr 2>&1)
+body_text=$(<"$body")
+url=https://github.com/owner/project
+[[ $body_text == *"- **ui**: close the menu ([#21]($url/pull/21), [#12]($url/issues/12)) by @ann"* ]]
+[[ $body_text == *"- **cli**: add an option (["*") by @ann"* ]]
+[[ $body_text == *$'## New Contributors\n\n'"- @ann made their first contribution in [#21]($url/pull/21)"$'\n\n**Full Changelog**'* ]]
+[[ $body_text == *"- [High] **auth**: check the token ([GHSA-c2f3-g4h5-j6m7]($url/security/advisories/GHSA-c2f3-g4h5-j6m7), ["*") reporter @rep"* ]]
+[[ $body_text == *"- [Moderate] **tls**: set a minimum version (["*"), [#30]($url/issues/30))"* ]]
+[[ $body_text == *"- **db**: unknown advisory ([GHSA-2222-3333-4444]($url/security/advisories/GHSA-2222-3333-4444), ["* ]]
+[[ $out == *'Could not read advisory GHSA-2222-3333-4444'* ]]
+[[ $body_text == *"- [Moderate] **web**: escape the name ([GHSA-m7j6-h5g4-f3c2]($url/security/advisories/GHSA-m7j6-h5g4-f3c2), ["*")"$'\n'* ]]
+[[ $out == *"Security footer 'maybe'"* && $body_text == *'- read the footer ('* ]]
+[[ $body_text == *"- **cfg**: the old name is refused ("* && $body_text == *"- **cfg**: rename the option ("* ]]
+[[ $body_text == *'- **deps**: bump x ('* && $body_text != *'@dependabot'* ]]
+# Each security fix is listed once, under Security, and the sections keep their order.
+[[ $(grep -c 'check the token' <<<"$body_text") == 1 && $(grep -c 'set a minimum version' <<<"$body_text") == 1 ]]
+[[ $(grep -E '^##' <<<"$body_text" | tr '\n' '|') == "## What's Changed|### Breaking Changes|### Security|### Features|### Bug Fixes|### Performance|### Documentation|### Build|### Chores|### Other Changes|## New Contributors|" ]]
 
 # open-pr refuses a branch that is behind or has diverged from the remote.
 git -C "$repo" commit --allow-empty -qm 'chore: remote only'
@@ -673,8 +726,14 @@ done
 	git tag v1 origin/main
 	VERSION=''
 	[[ $(read_version <<<'v0.2.0') == '==> Latest release: v0.1.0' ]]
-	# Changelog links use REPO, else the push repository.
+	# Changelog links use REPO, else the push repository. The fake gh answers nothing for these
+	# repositories, as GitHub does for one it cannot show: the entries keep their commit links.
+	PATH="$bin:$PATH"
 	PUSH_REPO=github.com/acme/widget VERSION=v0.4.0 generate_pr_body
+	if grep -Fq 'message' "$PR_BODY_FILE"; then
+		echo "an error answer from GitHub reached the changelog" >&2
+		exit 1
+	fi
 	grep -Fq 'https://github.com/acme/widget/commit/' "$PR_BODY_FILE"
 	rm -f "$PR_BODY_FILE"
 	PUSH_REPO=github.com/acme/widget VERSION=v0.4.0 REPO=acme/other generate_pr_body

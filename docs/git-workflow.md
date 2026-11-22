@@ -89,8 +89,13 @@ enforced**.
   the commits a merge brings in are listed and the merge itself is not.
   Commits by `github-actions[bot]` and commits whose subject is `changelog`
   are skipped too.
-- **Author names follow `.mailmap`.** Without one, each spelling of a name is
-  listed as a separate contributor.
+- **Footers follow the Conventional Commits footer format.** `Security:`,
+  `BREAKING CHANGE:` and `Fixes #12` lines are read anywhere in the message
+  body, one per line. A `Security:` value that is neither an advisory id nor a
+  severity is listed under the commit's type, with a warning. *Not enforced.*
+- **The owner of the repository is its main author.** Entries name other
+  authors by GitHub login, and never the owner, so a contribution from a second
+  account of the owner's shows under that account's login. *Not enforced.*
 - **The repository is on github.com.** Commit and compare links in the
   changelog always point at `https://github.com/`, even when the remote is a
   GitHub Enterprise host.
