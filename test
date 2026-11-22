@@ -23,6 +23,8 @@ state=$test_root/gh-state
 body=$test_root/pr-body
 merge_log=$test_root/gh-merge
 release_log=$test_root/gh-release-edit
+api_log=$test_root/gh-api
+rulesets_file=$test_root/gh-rulesets
 mkdir -p "$repo" "$bin"
 
 git -C "$repo" init -q
@@ -47,8 +49,88 @@ cat >"$bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 args=" $* "
+# gh api: the owner's .github repository is the Git repository GH_DEFAULTS (none when unset), the
+# repository's rulesets are "target<TAB>name" lines in GH_RULESETS, and every call is logged to GH_API_LOG.
+if [[ $1 == api ]]; then
+	endpoint=$2 method=GET input='' jq='' raw=0
+	shift 2
+	while (($#)); do
+		case $1 in
+		--method) method=$2 && shift ;;
+		--input) input=$2 && shift ;;
+		--jq) jq=$2 && shift ;;
+		-H)
+			[[ $2 != 'Accept: application/vnd.github.raw+json' ]] || raw=1
+			shift
+			;;
+		--paginate | --silent) ;;
+		*)
+			echo "fake gh: unexpected api argument $1" >&2
+			exit 1
+			;;
+		esac
+		shift
+	done
+	echo "$method $endpoint${input:+ $(tr -d '\n' <"$input")}" >>"$GH_API_LOG"
+	if [[ -n ${GH_FAIL:-} && $endpoint == *"$GH_FAIL" ]]; then
+		echo 'gh: Validation Failed (HTTP 422)' >&2
+		exit 1
+	fi
+	# Sets name and target from a ruleset's JSON, which init reads with --jq; the test rulesets are simple.
+	ruleset_fields() {
+		name='' target=''
+		[[ ! $1 =~ \"name\":\ *\"([^\"]*)\" ]] || name=${BASH_REMATCH[1]}
+		[[ ! $1 =~ \"target\":\ *\"([^\"]*)\" ]] || target=${BASH_REMATCH[1]}
+	}
+	case "$method $endpoint" in
+	'GET user') echo owner ;;
+	'GET repos/owner/.github/git/trees/HEAD?recursive=1')
+		if [[ -z ${GH_DEFAULTS:-} ]]; then
+			echo '{"message":"Not Found","status":"404"}'
+			echo 'gh: Not Found (HTTP 404)' >&2
+			exit 1
+		fi
+		git -C "$GH_DEFAULTS" ls-tree -r HEAD | while read -r mode type sha path; do
+			if [[ $type == blob && $path == defaults/* ]]; then
+				printf '%s\t%s\t%s\n' "$mode" "$sha" "$path"
+			fi
+		done
+		;;
+	'GET repos/owner/.github/git/blobs/'*)
+		if ((raw)); then
+			git -C "$GH_DEFAULTS" cat-file blob "${endpoint##*/}"
+		elif [[ $jq == '.content | @base64d | fromjson | [.name, .target] | @tsv' ]]; then
+			ruleset_fields "$(git -C "$GH_DEFAULTS" cat-file blob "${endpoint##*/}")"
+			printf '%s\t%s\n' "$name" "$target"
+		else
+			echo "fake gh: unexpected blob query $jq" >&2
+			exit 1
+		fi
+		;;
+	'GET repos/owner/project/rulesets') cat -- "$GH_RULESETS" 2>/dev/null || true ;;
+	'POST repos/owner/project/rulesets')
+		ruleset_fields "$(<"$input")"
+		printf '%s\t%s\n' "$target" "$name" >>"$GH_RULESETS"
+		;;
+	'PATCH repos/owner/project'* | 'PUT repos/owner/project/'*) ;;
+	*)
+		echo "unexpected gh invocation: api $method $endpoint" >&2
+		exit 1
+		;;
+	esac
+	exit 0
+fi
 case "$1 $2" in
 'repo view') echo 'github.com/owner/project' ;;
+'repo create')
+	if [[ $* != 'repo create owner/project --public --source . --remote origin' ]]; then
+		echo "fake gh: unexpected $*" >&2
+		exit 1
+	fi
+	echo "$*" >>"$GH_API_LOG"
+	git init --bare -q "$GH_NEW_ORIGIN"
+	git remote add origin "$GH_NEW_ORIGIN"
+	;;
 'pr list')
 	if [[ ${GH_REPO:-} != github.com/owner/project ]]; then
 		echo "fake gh: pr list targets '${GH_REPO:-}', not the push repository" >&2
@@ -307,6 +389,7 @@ for rc in "$home/.bashrc" "$home/.zshrc"; do
 	[[ $(grep -c 'release-flow\.mk' "$rc") == 1 && $(grep -c 'release-flow\.sh' "$rc") == 1 ]]
 done
 targets_file=$home/.config/make/release-flow.mk
+[[ $(MAKEFILES=$targets_file make -C "$test_root/empty" --no-print-directory -n init) == 'gh release-flow "init"' ]]
 [[ $(MAKEFILES=$targets_file make -C "$test_root/empty" --no-print-directory -n start-dev) == 'gh release-flow "start-dev"' ]]
 [[ $(MAKEFILES=$targets_file make -C "$test_root/empty" --no-print-directory -n rf-upgrade) == 'gh release-flow "upgrade"' ]]
 # Project Makefiles that read MAKEFILE_LIST do not see the user-wide file.
@@ -317,7 +400,7 @@ make_function() {
 	(cd "$test_root/$1" && HOME=$home MAKEFILES=$targets_file \
 		bash -c '. "$HOME/.config/make/release-flow.sh" && make "$@"' make "${@:2}")
 }
-targets_line=' release-flow:  start-dev  open-pr  merge-release  rf-version  rf-upgrade'
+targets_line=' release-flow:  init  start-dev  open-pr  merge-release  rf-version  rf-upgrade'
 # make help ends with a blank line and the targets; plain make without a Makefile prints only them; other runs are untouched.
 [[ $(make_function empty) == "$targets_line" && $(make_function empty help) == "$targets_line" ]]
 [[ $(make_function project help) == "project help"$'\n\n'"$targets_line" ]]
@@ -360,15 +443,17 @@ for command in upgrade setup-make; do
 	fi
 done
 
-# init writes a known-good release workflow at the repository root, from any subfolder.
+# Without defaults in the owner's .github repository, init says so and, as before, writes a known-good release
+# workflow at the repository root, from any subfolder.
 init_repo=$test_root/init-repo
-mkdir -p "$init_repo/sub"
+mkdir -p "$init_repo/sub" "$test_root/outside"
 git -C "$init_repo" init -q
 init() {
-	(cd "$init_repo/sub" && "$script_dir/gh-release-flow" "$@")
+	(cd "$init_repo/sub" && PATH="$bin:$PATH" GH_API_LOG=$api_log "$script_dir/gh-release-flow" "$@")
 }
+no_defaults='==> Found no defaults/ folder in owner/.github, so init writes the release workflow only.'
 workflow=$init_repo/.github/workflows/release.yml
-[[ $(init init) == 'OK: Wrote .github/workflows/release.yml for releases merged into main.'* ]]
+[[ $(init init) == "$no_defaults"$'\nOK: Wrote .github/workflows/release.yml for releases merged into main.\n'* ]]
 grep -Fq "branches: ['main']" "$workflow"
 grep -Fq 'startsWith(github.event.pull_request.head.ref, '\''dev/v'\'')' "$workflow"
 # shellcheck disable=SC2016
@@ -376,21 +461,180 @@ grep -Fq -- '--title "$tag"' "$workflow"
 [[ $(<"$workflow") != *__BASE_BRANCH__* ]]
 [[ $(tail -c 1 "$workflow" | od -An -c | tr -d ' ') == '\n' ]]
 # Running it again changes nothing; a different file is kept unless --force replaces it.
-[[ $(init init) == 'OK: .github/workflows/release.yml is up to date.' ]]
+[[ $(init init) == "$no_defaults"$'\nOK: .github/workflows/release.yml is up to date.' ]]
 echo '# mine' >>"$workflow"
 fails_with 'already exists and differs' init init
 [[ $(tail -n 1 "$workflow") == '# mine' ]]
 init init --force >/dev/null
 [[ $(<"$workflow") != *'# mine'* ]]
 # The base branch and the workflow file name follow the configuration.
-(cd "$init_repo" && DEFAULT_BASE_BRANCH=trunk RELEASE_WORKFLOW=publish.yaml "$script_dir/gh-release-flow" init >/dev/null)
+(cd "$init_repo" && PATH="$bin:$PATH" GH_API_LOG=$api_log DEFAULT_BASE_BRANCH=trunk RELEASE_WORKFLOW=publish.yaml \
+	"$script_dir/gh-release-flow" init >/dev/null)
 grep -Fq "branches: ['trunk']" "$init_repo/.github/workflows/publish.yaml"
-fails_with 'file name ending in .yml' env RELEASE_WORKFLOW=../release.yml "$script_dir/gh-release-flow" init
-fails_with 'cannot write DEFAULT_BASE_BRANCH' env DEFAULT_BASE_BRANCH="a'b" "$script_dir/gh-release-flow" init
+# Bad configuration and arguments fail before any gh call: the fake gh has no log to write to here.
+fails_with 'file name ending in .yml' env PATH="$bin:$PATH" RELEASE_WORKFLOW=../release.yml "$script_dir/gh-release-flow" init
+fails_with 'cannot write DEFAULT_BASE_BRANCH' env PATH="$bin:$PATH" DEFAULT_BASE_BRANCH="a'b" "$script_dir/gh-release-flow" init
 fails_with 'init accepts only --force' init init extra
-fails_with 'Not inside a Git working tree' bash -c "cd '$test_root' && '$script_dir/gh-release-flow' init"
+# Outside a Git working tree it still stops after the lookup, without git init or a GitHub repository.
+init_outside() {
+	(cd "$test_root/outside" && PATH="$bin:$PATH" GH_API_LOG=$api_log "$script_dir/gh-release-flow" init)
+}
+: >"$api_log"
+fails_with 'Not inside a Git working tree' init_outside
+[[ ! -e $test_root/outside/.git && $(<"$api_log") == $'GET user\nGET repos/owner/.github/git/trees/HEAD?recursive=1' ]]
 # The generated workflow passes actionlint when it is installed.
 if command -v actionlint >/dev/null; then (cd "$init_repo" && actionlint); fi
+
+# With defaults in the owner's .github repository, init sets up the repository from them.
+dotgithub=$test_root/dotgithub
+mkdir -p "$dotgithub/defaults/files/.github/workflows" "$dotgithub/defaults/settings" "$dotgithub/defaults/rulesets"
+printf 'MIT License\n\nCopyright (c) {{year}} John Smith\n' >"$dotgithub/defaults/files/LICENSE"
+printf 'Report at https://github.com/{{owner}}/{{repo}}/security/advisories/new' >"$dotgithub/defaults/files/SECURITY.md"
+printf '* @{{owner}}\n' >"$dotgithub/defaults/files/.github/CODEOWNERS"
+printf 'name: not the release workflow\n' >"$dotgithub/defaults/files/.github/workflows/release.yml"
+printf '{"allow_squash_merge": false}\n' >"$dotgithub/defaults/settings/repo.json"
+printf '{"default_workflow_permissions": "read"}\n' >"$dotgithub/defaults/settings/actions-workflow.json"
+printf '{"state": "configured"}\n' >"$dotgithub/defaults/settings/code-scanning-default-setup.json"
+for setting in vulnerability-alerts automated-security-fixes private-vulnerability-reporting immutable-releases; do
+	: >"$dotgithub/defaults/settings/$setting"
+done
+printf '{}\n' >"$dotgithub/defaults/settings/future-setting.json"
+printf '{"name": "main", "target": "branch", "enforcement": "active"}\n' >"$dotgithub/defaults/rulesets/main.json"
+printf '{"name": "release tags", "target": "tag", "enforcement": "active"}\n' >"$dotgithub/defaults/rulesets/release-tags.json"
+printf 'The owner defaults.\n' >"$dotgithub/README.md"
+git -C "$dotgithub" init -q
+git -C "$dotgithub" add -A
+git -C "$dotgithub" -c user.name=t -c user.email=t@example.com commit -qm defaults
+year=$(date +%Y)
+# Every settings call, in the order init makes them.
+settings_sent=$(printf '%s\n' \
+	'PATCH repos/owner/project {"allow_squash_merge": false}' \
+	'PUT repos/owner/project/actions/permissions/workflow {"default_workflow_permissions": "read"}' \
+	'PUT repos/owner/project/vulnerability-alerts' \
+	'PUT repos/owner/project/automated-security-fixes' \
+	'PUT repos/owner/project/private-vulnerability-reporting' \
+	'PUT repos/owner/project/immutable-releases' \
+	'PATCH repos/owner/project/code-scanning/default-setup {"state": "configured"}')
+defaults_init() {
+	local dir=$1
+	shift
+	(cd "$dir" && PATH="$bin:$PATH" GH_DEFAULTS=$dotgithub GH_API_LOG=$api_log GH_RULESETS=$rulesets_file \
+		GH_NEW_ORIGIN=$dir.git GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com \
+		GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com "$script_dir/gh-release-flow" init "$@")
+}
+# On a new folder with every answer yes: git init, the repository, the files in one root commit pushed to a
+# main that tracks origin, all the settings, and both rulesets.
+fresh=$test_root/fresh/project
+mkdir -p "$fresh"
+: >"$api_log"
+out=$(defaults_init "$fresh" <<<$'y\ny\ny\ny')
+[[ $(git -C "$fresh" log --format=%s main) == 'chore: add repository defaults' ]]
+[[ $(git --git-dir="$fresh.git" show --name-only --format= main) == $'.github/CODEOWNERS\n.github/workflows/release.yml\nLICENSE\nSECURITY.md' ]]
+[[ $(git -C "$fresh" rev-parse --abbrev-ref 'main@{u}') == origin/main ]]
+[[ $(grep -E '^(PUT|PATCH) ' "$api_log") == "$settings_sent" && $(<"$rulesets_file") == $'branch\tmain\ntag\trelease tags' ]]
+[[ $out == *'Git:        done, created a repository on main'* && $out == *'Push:       done'* ]]
+: >"$rulesets_file"
+# Without origin it runs git init, then asks before creating the GitHub repository; a no stops the run there.
+project=$test_root/new/project
+mkdir -p "$project"
+: >"$api_log"
+fails_with 'init needs a GitHub repository' defaults_init "$project" <<<n
+[[ $(git -C "$project" symbolic-ref --short HEAD) == main && -z $(git -C "$project" remote) ]]
+[[ -z $(git -C "$project" status --porcelain --untracked-files=all) ]]
+if grep -q 'repo create' "$api_log"; then
+	echo 'a declined init created the repository' >&2
+	exit 1
+fi
+# A yes creates it and writes the files with their placeholders filled, the release workflow from the template.
+# With the push declined they stay uncommitted, so CodeQL default setup and the branch ruleset are held back,
+# while the tag ruleset is created. Unknown files are reported and skipped.
+: >"$api_log"
+out=$(defaults_init "$project" <<<$'y\nn\ny\ny')
+grep -Fxq 'repo create owner/project --public --source . --remote origin' "$api_log"
+[[ $(git -C "$project" remote get-url origin) == "$project.git" ]]
+[[ $(<"$project/LICENSE") == *"Copyright (c) $year John Smith" ]]
+[[ $(<"$project/SECURITY.md") == 'Report at https://github.com/owner/project/security/advisories/new' ]]
+[[ $(tail -c 1 "$project/SECURITY.md") == w && $(<"$project/.github/CODEOWNERS") == '* @owner' ]]
+grep -Fq "branches: ['main']" "$project/.github/workflows/release.yml"
+[[ $out == *'Skipped defaults/files/.github/workflows/release.yml'* && $out == *'Skipped defaults/settings/future-setting.json'* ]]
+if git -C "$project" rev-parse -q --verify HEAD >/dev/null || [[ -n $(git --git-dir="$project.git" for-each-ref) ]]; then
+	echo 'a declined push still committed or pushed' >&2
+	exit 1
+fi
+[[ $(grep -E '^(PUT|PATCH) ' "$api_log") == "$(head -n 6 <<<"$settings_sent")" ]]
+[[ $(<"$rulesets_file") == $'tag\trelease tags' ]]
+[[ $out == *'Push:       declined'* && $out == *'held back CodeQL default setup until main is on GitHub'* ]]
+[[ $out == *'Rulesets:   held back main until the files are on main; done, created release tags'* ]]
+# Once the files are on main, the next run applies CodeQL default setup and creates the branch ruleset.
+git -C "$project" add -A
+git -C "$project" -c user.name=t -c user.email=t@example.com commit -qm 'chore: add the defaults'
+git -C "$project" push -q -u origin main
+: >"$api_log"
+out=$(defaults_init "$project" <<<$'y\ny')
+[[ $(grep -E '^(PUT|PATCH) ' "$api_log") == "$settings_sent" ]]
+[[ $(<"$rulesets_file") == $'tag\trelease tags\nbranch\tmain' ]]
+[[ $out == *'Rulesets:   done, created main; already done, kept release tags'* ]]
+# A second run on a finished repository asks once, writes no file and creates nothing; it sends the settings again.
+head=$(git -C "$project" rev-parse HEAD)
+: >"$api_log"
+out=$(defaults_init "$project" <<<y)
+[[ $(grep -c '\[y/N\]' <<<"$out") == 1 ]]
+[[ $(git -C "$project" rev-parse HEAD) == "$head" && -z $(git -C "$project" status --porcelain) ]]
+[[ $(grep -Ev '^GET ' "$api_log") == "$settings_sent" ]]
+[[ $out == *'Files:      already done'* && $out == *'Push:       already done'* ]]
+[[ $out == *'Settings:   done, sent 7 (every run sends them again)'* && $out == *'Rulesets:   already done, kept main, release tags'* ]]
+# A failed setting stops the run and says which settings were sent and which were not.
+status=0
+out=$(GH_FAIL=/automated-security-fixes defaults_init "$project" <<<y 2>&1) || status=$?
+[[ $status == 1 && $out == *'Done: repo.json, actions-workflow.json, vulnerability-alerts'* ]]
+[[ $out == *'Not done: automated-security-fixes, private-vulnerability-reporting, immutable-releases, code-scanning-default-setup.json'* ]]
+
+# In a repository with origin, init refuses to push while origin has commits that main lacks, and checks that
+# before writing anything. It keeps the user's files, lists the unpushed commits the push would publish, and
+# commits only the files it wrote.
+existing=$test_root/existing
+git init -q -b main "$existing"
+git -C "$existing" config user.name 'John Smith'
+git -C "$existing" config user.email tester@example.com
+printf 'my license\n' >"$existing/LICENSE"
+git -C "$existing" add LICENSE
+git -C "$existing" commit -qm 'chore: add a license'
+git init --bare -q "$test_root/existing.git"
+git -C "$existing" remote add origin "$test_root/existing.git"
+git -C "$existing" push -qu origin main
+git clone -q -b main "$test_root/existing.git" "$test_root/existing-other"
+git -C "$test_root/existing-other" -c user.name=Other -c user.email=other@example.com commit --allow-empty -qm 'docs: from elsewhere'
+git -C "$test_root/existing-other" push -q
+git -C "$existing" commit --allow-empty -qm 'feat: user work'
+: >"$rulesets_file"
+fails_with 'Pull them first' defaults_init "$existing"
+[[ ! -e $existing/SECURITY.md ]]
+git -C "$existing" pull -q --rebase
+printf 'draft\n' >"$existing/notes.txt"
+git -C "$existing" add notes.txt
+: >"$api_log"
+out=$(defaults_init "$existing" <<<$'y\nn\nn')
+[[ $out == *'kept     LICENSE (yours differs; --force replaces it)'* && $(<"$existing/LICENSE") == 'my license' ]]
+[[ $out == *'feat: user work'*'Commit and push these to owner/project main? [y/N]'* ]]
+[[ $(git --git-dir="$test_root/existing.git" log -2 --format=%s main) == $'chore: add repository defaults\nfeat: user work' ]]
+[[ $(git --git-dir="$test_root/existing.git" show --name-only --format= main) == $'.github/CODEOWNERS\n.github/workflows/release.yml\nSECURITY.md' ]]
+[[ $(git -C "$existing" status --porcelain) == 'A  notes.txt' ]]
+[[ $out == *'Settings:   declined'* && $out == *'Rulesets:   declined main, release tags'* ]]
+if grep -Eq '^(PUT|PATCH|POST) ' "$api_log"; then
+	echo 'declined settings or rulesets were applied' >&2
+	exit 1
+fi
+# --force replaces a file that differs, but once the repository has a branch ruleset, init does not push.
+printf 'branch\tmain\n' >"$rulesets_file"
+head=$(git -C "$existing" rev-parse HEAD)
+out=$(defaults_init "$existing" --force)
+[[ $out == *'replace  LICENSE'* && $out == *'has a branch ruleset, so init does not push to main'* ]]
+[[ $(<"$existing/LICENSE") == *"Copyright (c) $year John Smith" ]]
+[[ $(git -C "$existing" rev-parse HEAD) == "$head" && $(git -C "$existing" status --porcelain LICENSE) == ' M LICENSE' ]]
+# init runs only on the base branch.
+git -C "$existing" checkout -q -b feature
+fails_with 'Switch to main' defaults_init "$existing"
+git -C "$existing" checkout -q main
 
 # version is the release tag of the tool's own clone, and unknown for a copy outside one.
 tool_clone=$test_root/tool
