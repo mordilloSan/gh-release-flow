@@ -100,6 +100,11 @@ enforced**.
 - **Each release branch has one open PR into the base branch.** `open-pr`
   reuses an open PR with the same head and base from the push repository, or
   creates one titled `Release vX.Y.Z`.
+- **The release branch has at least one commit the base branch lacks.**
+  GitHub refuses a pull request with nothing to merge, so a release of changes
+  that were all merged into the base branch by other PRs needs a commit of its
+  own on the release branch, such as a documentation change. *Enforced by
+  GitHub: `open-pr` stops where GitHub refuses to create the PR.*
 - **The PR body is generated, and it becomes the release notes.** Every
   `open-pr` run regenerates the body, replacing text edited in by hand. The
   `init` workflow publishes the body as it stands at merge time.
