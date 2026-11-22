@@ -414,6 +414,7 @@ defaults/
     .github/workflows/check.yml
   settings/                           one file per GitHub API call
     repo.json
+    actions-permissions.json
     actions-workflow.json
     vulnerability-alerts
     automated-security-fixes
@@ -462,6 +463,7 @@ never guesses what a newer file means.
 | File | Call |
 | --- | --- |
 | `repo.json` | `PATCH /repos/{owner}/{repo}` |
+| `actions-permissions.json` | `PUT /repos/{owner}/{repo}/actions/permissions` |
 | `actions-workflow.json` | `PUT /repos/{owner}/{repo}/actions/permissions/workflow` |
 | `vulnerability-alerts` | `PUT /repos/{owner}/{repo}/vulnerability-alerts` |
 | `automated-security-fixes` | `PUT /repos/{owner}/{repo}/automated-security-fixes` |
