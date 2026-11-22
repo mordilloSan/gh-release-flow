@@ -493,6 +493,7 @@ printf 'Report at https://github.com/{{owner}}/{{repo}}/security/advisories/new'
 printf '* @{{owner}}\n' >"$dotgithub/defaults/files/.github/CODEOWNERS"
 printf 'name: not the release workflow\n' >"$dotgithub/defaults/files/.github/workflows/release.yml"
 printf '{"allow_squash_merge": false}\n' >"$dotgithub/defaults/settings/repo.json"
+printf '{"enabled": true, "sha_pinning_required": true}\n' >"$dotgithub/defaults/settings/actions-permissions.json"
 printf '{"default_workflow_permissions": "read"}\n' >"$dotgithub/defaults/settings/actions-workflow.json"
 printf '{"state": "configured"}\n' >"$dotgithub/defaults/settings/code-scanning-default-setup.json"
 for setting in vulnerability-alerts automated-security-fixes private-vulnerability-reporting immutable-releases; do
@@ -509,6 +510,7 @@ year=$(date +%Y)
 # Every settings call, in the order init makes them.
 settings_sent=$(printf '%s\n' \
 	'PATCH repos/owner/project {"allow_squash_merge": false}' \
+	'PUT repos/owner/project/actions/permissions {"enabled": true, "sha_pinning_required": true}' \
 	'PUT repos/owner/project/actions/permissions/workflow {"default_workflow_permissions": "read"}' \
 	'PUT repos/owner/project/vulnerability-alerts' \
 	'PUT repos/owner/project/automated-security-fixes' \
@@ -561,7 +563,7 @@ if git -C "$project" rev-parse -q --verify HEAD >/dev/null || [[ -n $(git --git-
 	echo 'a declined push still committed or pushed' >&2
 	exit 1
 fi
-[[ $(grep -E '^(PUT|PATCH) ' "$api_log") == "$(head -n 6 <<<"$settings_sent")" ]]
+[[ $(grep -E '^(PUT|PATCH) ' "$api_log") == "$(head -n 7 <<<"$settings_sent")" ]]
 [[ $(<"$rulesets_file") == $'tag\trelease tags' ]]
 [[ $out == *'Push:       declined'* && $out == *'held back CodeQL default setup until main is on GitHub'* ]]
 [[ $out == *'Rulesets:   held back main until the files are on main; done, created release tags'* ]]
@@ -582,11 +584,11 @@ out=$(defaults_init "$project" <<<y)
 [[ $(git -C "$project" rev-parse HEAD) == "$head" && -z $(git -C "$project" status --porcelain) ]]
 [[ $(grep -Ev '^GET ' "$api_log") == "$settings_sent" ]]
 [[ $out == *'Files:      already done'* && $out == *'Push:       already done'* ]]
-[[ $out == *'Settings:   done, sent 7 (every run sends them again)'* && $out == *'Rulesets:   already done, kept main, release tags'* ]]
+[[ $out == *'Settings:   done, sent 8 (every run sends them again)'* && $out == *'Rulesets:   already done, kept main, release tags'* ]]
 # A failed setting stops the run and says which settings were sent and which were not.
 status=0
 out=$(GH_FAIL=/automated-security-fixes defaults_init "$project" <<<y 2>&1) || status=$?
-[[ $status == 1 && $out == *'Done: repo.json, actions-workflow.json, vulnerability-alerts'* ]]
+[[ $status == 1 && $out == *'Done: repo.json, actions-permissions.json, actions-workflow.json, vulnerability-alerts'* ]]
 [[ $out == *'Not done: automated-security-fixes, private-vulnerability-reporting, immutable-releases, code-scanning-default-setup.json'* ]]
 
 # In a repository with origin, init refuses to push while origin has commits that main lacks, and checks that

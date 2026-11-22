@@ -663,6 +663,7 @@ EOF
 # comes last, after the push, so it has code to analyse.
 settings_calls=(
 	'repo.json PATCH'
+	'actions-permissions.json PUT /actions/permissions'
 	'actions-workflow.json PUT /actions/permissions/workflow'
 	'vulnerability-alerts PUT /vulnerability-alerts'
 	'automated-security-fixes PUT /automated-security-fixes'
