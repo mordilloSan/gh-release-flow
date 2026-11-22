@@ -96,69 +96,159 @@ previous_tag() {
 	git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude "$1" HEAD 2>/dev/null || true
 }
 
+# Prints one changelog entry: the scope in bold, the text, and its links in parentheses.
+changelog_entry() {
+	local scope=$1 text=$2 links=$3 author=$4 entry='- '
+	[[ -z $scope ]] || entry+="**$scope**: "
+	entry+=$text
+	[[ -z $links ]] || entry+=" ($links)"
+	[[ -z $author ]] || entry+=" by $author"
+	printf '%s\n' "$entry"
+}
+
+# The GitHub login behind a commit, or nothing when GitHub names no account or cannot be asked.
+commit_login() {
+	local login
+	login=$(gh api "repos/$1/commits/$2" --jq '.author.login // ""' 2>/dev/null) || return 0
+	[[ ! $login =~ ^[A-Za-z0-9-]+$ ]] || printf '%s' "$login"
+}
+
+# The merged pull request a commit came through, other than a release PR, or nothing. On an error,
+# gh api prints GitHub's answer on stdout, so the output is used only when the call succeeds.
+commit_pr() {
+	local pr
+	pr=$(gh api "repos/$1/commits/$2/pulls" \
+		--jq '[.[] | select(.merged_at != null and (.head.ref | startswith("dev/v") | not)) | .number] | first // empty' \
+		2>/dev/null) || return 0
+	[[ ! $pr =~ ^[0-9]+$ ]] || printf '%s' "$pr"
+}
+
+# Prints "severity<TAB>reporters" for a security advisory, or fails when GitHub cannot show it.
+advisory_fields() {
+	local fields
+	fields=$(gh api "repos/$1/security-advisories/$2" \
+		--jq '[.severity, ([.credits_detailed[]? | select(.type == "reporter" or .type == "finder") | "@" + .user.login] | join(" "))] | @tsv' \
+		2>/dev/null) || return 1
+	[[ $fields =~ ^(low|medium|moderate|high|critical)$'\t' ]] || return 1
+	printf '%s\n' "$fields"
+}
+
 generate_changelog() {
 	local version=$1 previous=$2 commit_range=$3 repo=$4
-	local features='' fixes='' docs='' style='' refactor='' perf=''
-	local tests='' build='' ci='' chore='' other=''
-	local message hash author entry contributors=''
-	local -a log_args=(--no-show-signature --reverse --no-merges --pretty=format:'%s%x00%h%x00%aN%x00')
+	local owner=${repo%%/*} url="https://github.com/$repo"
+	local subject hash author email body line type scope bang text key login pr links n
+	local security breaking severity reporters advisory
+	local -a log_args=(--no-show-signature --reverse --no-merges --pretty=format:'%s%x00%H%x00%aN%x00%aE%x00%b%x00')
+	local -a sections=(feat fix perf refactor docs style test build ci chore other)
+	local -A title=([feat]=Features [fix]='Bug Fixes' [perf]=Performance [refactor]=Refactoring
+		[docs]=Documentation [style]=Style [test]=Tests [build]=Build [ci]=CI/CD [chore]=Chores [other]='Other Changes')
+	local -A entries=() logins=() earlier=() first_link=()
+	local breaking_entries='' security_entries='' newcomers=''
 	[[ -n $commit_range ]] && log_args+=("$commit_range")
+	# Emails with a commit in the previous release: their authors are not new.
+	if [[ -n $previous ]]; then
+		while IFS= read -r email; do
+			earlier[${email,,}]=1
+		done < <(git log --format='%aE' "$previous")
+	fi
 
-	while IFS= read -r -d '' message &&
+	while IFS= read -r -d '' subject &&
 		IFS= read -r -d '' hash &&
-		IFS= read -r -d '' author; do
-		message=${message#$'\n'}
-		[[ -n $message ]] || continue
+		IFS= read -r -d '' author &&
+		IFS= read -r -d '' email &&
+		IFS= read -r -d '' body; do
+		subject=${subject#$'\n'}
+		[[ -n $subject ]] || continue
 		[[ $author != 'github-actions[bot]' ]] || continue
-		[[ ! $message =~ ^[Cc]hangelog$ ]] || continue
+		[[ ! $subject =~ ^[Cc]hangelog$ ]] || continue
 
-		contributors+="* $author"$'\n'
-		entry="* $message ([${hash:0:7}](https://github.com/$repo/commit/$hash)) by $author"
-		if [[ $message =~ ^feat(\(.*\))?!?: ]]; then
-			features+="$entry"$'\n'
-		elif [[ $message =~ ^fix(\(.*\))?!?: ]]; then
-			fixes+="$entry"$'\n'
-		elif [[ $message =~ ^docs(\(.*\))?!?: ]]; then
-			docs+="$entry"$'\n'
-		elif [[ $message =~ ^style(\(.*\))?!?: ]]; then
-			style+="$entry"$'\n'
-		elif [[ $message =~ ^refactor(\(.*\))?!?: ]]; then
-			refactor+="$entry"$'\n'
-		elif [[ $message =~ ^perf(\(.*\))?!?: ]]; then
-			perf+="$entry"$'\n'
-		elif [[ $message =~ ^test(\(.*\))?!?: ]]; then
-			tests+="$entry"$'\n'
-		elif [[ $message =~ ^build(\(.*\))?!?: ]]; then
-			build+="$entry"$'\n'
-		elif [[ $message =~ ^ci(\(.*\))?!?: ]]; then
-			ci+="$entry"$'\n'
-		elif [[ $message =~ ^chore(\(.*\))?!?: ]]; then
-			chore+="$entry"$'\n'
+		# The subject: type(scope)!: text, or anything else under Other Changes.
+		type=other scope='' bang='' text=$subject
+		if [[ $subject =~ ^([A-Za-z]+)(\(([^\)]*)\))?(!)?:\ +(.+)$ ]]; then
+			type=${BASH_REMATCH[1],,} scope=${BASH_REMATCH[3]} bang=${BASH_REMATCH[4]} text=${BASH_REMATCH[5]}
+			[[ -n ${title[$type]+set} && $type != other ]] || { type=other scope='' text=$subject; }
+		fi
+
+		# The footers: Security, BREAKING CHANGE, and the issues it fixes or refers to.
+		security='' breaking='' links=''
+		local -a issues=()
+		while IFS= read -r line; do
+			line=${line%$'\r'}
+			if [[ $line =~ ^Security:[[:space:]]*([^[:space:]].*)$ ]]; then
+				security=${BASH_REMATCH[1]%"${BASH_REMATCH[1]##*[![:space:]]}"}
+			elif [[ $line =~ ^BREAKING[\ -]CHANGE:[[:space:]]*(.+)$ ]]; then
+				breaking=${BASH_REMATCH[1]}
+			elif [[ ${line,,} =~ ^(close[sd]?|fix(e[sd])?|resolve[sd]?|refs?):?[[:space:]]+(#[0-9]+([[:space:]]*,[[:space:]]*#[0-9]+)*)[[:space:]]*$ ]]; then
+				for n in ${BASH_REMATCH[3]//[#,]/ }; do
+					[[ " ${issues[*]} " == *" $n "* ]] || issues+=("$n")
+				done
+			fi
+		done <<<"$body"
+		[[ -z $bang || -n $breaking ]] || breaking=$text
+
+		# The author, named only when it is someone other than the repository's owner.
+		key=${email,,}
+		[[ -n $key ]] || key="name:$author"
+		[[ -n ${logins[$key]+set} ]] || logins[$key]=$(commit_login "$repo" "$hash")
+		login=${logins[$key]}
+		pr=$(commit_pr "$repo" "$hash")
+		if [[ -n $pr ]]; then
+			links="[#$pr]($url/pull/$pr)"
 		else
-			other+="$entry"$'\n'
+			links="[${hash:0:7}]($url/commit/$hash)"
+		fi
+		for n in "${issues[@]}"; do
+			[[ $n == "$pr" ]] || links+=", [#$n]($url/issues/$n)"
+		done
+		if [[ -n $login && ${login,,} == "${owner,,}" ]]; then
+			login=''
+		elif [[ -n $login && -n $previous && -z ${earlier[$key]+set} && -z ${first_link[$login]+set} ]]; then
+			first_link[$login]=${links%%,*}
+			newcomers+="- @$login made their first contribution in ${first_link[$login]}"$'\n'
+		fi
+
+		if [[ -n $breaking ]]; then
+			breaking_entries+=$(changelog_entry "$scope" "$breaking" "$links" "${login:+@$login}")$'\n'
+		fi
+		if [[ -n $security ]]; then
+			severity='' reporters='' advisory=''
+			if [[ $security =~ ^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$ ]]; then
+				advisory=$security
+				if IFS=$'\t' read -r severity reporters < <(advisory_fields "$repo" "$advisory"); then
+					:
+				else
+					echo "WARNING: Could not read advisory $advisory; its entry has no severity." >&2
+				fi
+			elif [[ ${security,,} =~ ^(low|medium|moderate|high|critical)$ ]]; then
+				severity=${security,,}
+			else
+				echo "WARNING: Security footer '$security' on ${hash:0:7} is neither a GHSA id nor low, moderate, high or critical; listed under its type." >&2
+				security=''
+			fi
+		fi
+		if [[ -n $security ]]; then
+			line=$(changelog_entry "$scope" "$text" "${advisory:+[$advisory]($url/security/advisories/$advisory), }$links" "${login:+@$login}")
+			# GitHub's API says medium where its pages say Moderate.
+			[[ $severity != medium ]] || severity=moderate
+			[[ -z $severity ]] || line="- [${severity^}] ${line#- }"
+			[[ -z $reporters ]] || line+=" reporter $reporters"
+			security_entries+=$line$'\n'
+		else
+			entries[$type]+=$(changelog_entry "$scope" "$text" "$links" "${login:+@$login}")$'\n'
 		fi
 	done < <(git log "${log_args[@]}")
 
-	[[ -z $features ]] || printf '###  Features\n\n%s\n' "$features"
-	[[ -z $fixes ]] || printf '###  Bug Fixes\n\n%s\n' "$fixes"
-	[[ -z $perf ]] || printf '###  Performance\n\n%s\n' "$perf"
-	[[ -z $refactor ]] || printf '###  Refactoring\n\n%s\n' "$refactor"
-	[[ -z $docs ]] || printf '###  Documentation\n\n%s\n' "$docs"
-	[[ -z $style ]] || printf '###  Style\n\n%s\n' "$style"
-	[[ -z $tests ]] || printf '###  Tests\n\n%s\n' "$tests"
-	[[ -z $build ]] || printf '###  Build\n\n%s\n' "$build"
-	[[ -z $ci ]] || printf '###  CI/CD\n\n%s\n' "$ci"
-	[[ -z $chore ]] || printf '###  Chores\n\n%s\n' "$chore"
-	[[ -z $other ]] || printf '###  Other Changes\n\n%s\n' "$other"
-
-	printf '###  Contributors\n\n'
-	printf '%s' "$contributors" | sort -u
+	printf "## What's Changed\n\n"
+	[[ -z $breaking_entries ]] || printf '### Breaking Changes\n\n%s\n' "$breaking_entries"
+	[[ -z $security_entries ]] || printf '### Security\n\n%s\n' "$security_entries"
+	for type in "${sections[@]}"; do
+		[[ -z ${entries[$type]:-} ]] || printf '### %s\n\n%s\n' "${title[$type]}" "${entries[$type]}"
+	done
+	[[ -z $newcomers ]] || printf '## New Contributors\n\n%s\n' "$newcomers"
 	if [[ -n $previous ]]; then
-		printf '\n\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
-			"$repo" "$previous" "$version"
+		printf '**Full Changelog**: %s/compare/%s...%s\n' "$url" "$previous" "$version"
 	else
-		printf '\n\n**Full Changelog**: https://github.com/%s/releases/tag/%s\n' \
-			"$repo" "$version"
+		printf '**Full Changelog**: %s/releases/tag/%s\n' "$url" "$version"
 	fi
 }
 
@@ -168,11 +258,7 @@ generate_pr_body() {
 	commit_range=''
 	[[ -z $previous ]] || commit_range=$previous..HEAD
 	PR_BODY_FILE=$(mktemp)
-	{
-		echo "## $VERSION — $(date -u +%Y-%m-%d)"
-		echo
-		generate_changelog "$VERSION" "$previous" "$commit_range" "$repo_name"
-	} >"$PR_BODY_FILE"
+	generate_changelog "$VERSION" "$previous" "$commit_range" "$repo_name" >"$PR_BODY_FILE"
 }
 
 start_dev() {
@@ -255,6 +341,7 @@ open_pr() {
 
 	prnum=$(find_pr open "$push_owner") ||
 		die "Unable to query open PRs for $BRANCH."
+	echo '==> Writing the changelog; GitHub is asked about each commit…'
 	generate_pr_body
 	if [[ -n $prnum ]]; then
 		echo "==> An open PR (#$prnum) from $BRANCH -> $DEFAULT_BASE_BRANCH already exists."
