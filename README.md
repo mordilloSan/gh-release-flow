@@ -255,7 +255,9 @@ The command:
    remote branch.
 5. Reuses an open PR from the push repository with the same head and base
    branches, or creates one titled `Release <version>`.
-6. Generates the PR body from the repository's commit history.
+6. Generates the PR body from the repository's commit history, asking GitHub
+   about each commit for its pull request, its author's login and any advisory
+   its `Security:` footer names (see [Generated changelog](#generated-changelog)).
 7. Waits briefly for CI checks to register, then watches them to completion.
 8. Prints the PR URL and exits unsuccessfully if checks fail or are still
    pending when monitoring ends.
