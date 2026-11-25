@@ -128,6 +128,13 @@ if [[ $1 == api ]]; then
 		fi
 		printf '%s\n' "$advisory"
 		;;
+	# The repository's default branch is GH_DEFAULT_BRANCH, and a rename renames that branch in origin.
+	'GET repos/owner/project') echo "${GH_DEFAULT_BRANCH:-main}" ;;
+	'POST repos/owner/project/branches/'*/rename)
+		old=${endpoint#repos/owner/project/branches/}
+		[[ $(<"$input") =~ \"new_name\":\ *\"([^\"]*)\" ]]
+		git --git-dir="$(git remote get-url origin)" branch -m "${old%/rename}" "${BASH_REMATCH[1]}"
+		;;
 	'POST repos/owner/project/rulesets')
 		ruleset_fields "$(<"$input")"
 		printf '%s\t%s\n' "$target" "$name" >>"$GH_RULESETS"
@@ -690,6 +697,44 @@ out=$(defaults_init "$existing" --force)
 git -C "$existing" checkout -q -b feature
 fails_with 'Switch to main' defaults_init "$existing"
 git -C "$existing" checkout -q main
+
+# A repository that Git started on master, with no main anywhere, gets master renamed to main. Without origin,
+# an unborn master that is the only branch is renamed here, with nothing asked before the repository prompt.
+legacy=$test_root/legacy/project
+git init -q -b master "$legacy"
+: >"$rulesets_file"
+fails_with 'init needs a GitHub repository' defaults_init "$legacy" <<<n
+[[ $(git -C "$legacy" symbolic-ref --short HEAD) == main ]]
+# master is left alone when it is not the only local branch.
+lonely=$test_root/lonely/project
+git init -q -b master "$lonely"
+git -C "$lonely" -c user.name=t -c user.email=t@example.com commit --allow-empty -qm 'chore: start'
+git -C "$lonely" branch other
+fails_with 'Switch to main' defaults_init "$lonely"
+[[ $(git -C "$lonely" symbolic-ref --short HEAD) == master ]]
+# With origin, master on GitHub is renamed there too, only when it is the default branch and after a yes.
+pushed=$test_root/pushed/project
+git init -q -b master "$pushed"
+git -C "$pushed" -c user.name=t -c user.email=t@example.com commit --allow-empty -qm 'chore: start'
+git init --bare -q -b master "$pushed.git"
+git -C "$pushed" remote add origin "$pushed.git"
+git -C "$pushed" push -qu origin master
+fails_with 'Switch to main' defaults_init "$pushed"
+: >"$api_log"
+GH_DEFAULT_BRANCH=master fails_with 'or set DEFAULT_BASE_BRANCH=master' defaults_init "$pushed" <<<n
+[[ $(git -C "$pushed" symbolic-ref --short HEAD) == master && -n $(git --git-dir="$pushed.git" branch --list master) ]]
+if grep -q '^POST ' "$api_log"; then
+	echo 'a declined rename renamed the branch on GitHub' >&2
+	exit 1
+fi
+: >"$api_log"
+out=$(GH_DEFAULT_BRANCH=master defaults_init "$pushed" <<<$'y\ny\nn\nn')
+grep -Fxq 'POST repos/owner/project/branches/master/rename {"new_name": "main"}' "$api_log"
+[[ $(git --git-dir="$pushed.git" for-each-ref --format='%(refname:short)' refs/heads/) == main ]]
+[[ $(git -C "$pushed" symbolic-ref --short HEAD) == main && $(git -C "$pushed" rev-parse --abbrev-ref 'main@{u}') == origin/main ]]
+[[ -z $(git -C "$pushed" for-each-ref refs/remotes/origin/master) ]]
+[[ $out == *'Git:        done, renamed master to main here and on owner/project'* && $out == *'Push:       done'* ]]
+[[ $(git --git-dir="$pushed.git" log -1 --format=%s main) == 'chore: add repository defaults' ]]
 
 # version is the release tag of the tool's own clone, and unknown for a copy outside one.
 tool_clone=$test_root/tool

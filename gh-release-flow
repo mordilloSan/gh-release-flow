@@ -936,6 +936,50 @@ init_workflow() {
 	init_from_defaults "$force" "$owner" "$name"
 }
 
+# Renames the current branch $1 to the base branch $2 when it is the repository's default under another name,
+# such as the master of a Git without init.defaultBranch, and $2 exists neither here nor on origin. With
+# origin's repository $3/$4, a branch that is on GitHub must be its default branch, and GitHub renames it after
+# a yes; one that is not there yet, like one with no origin, must be the only local branch. Writes the request
+# body into the folder $5, sets RENAMED_WHERE for the summary, and fails, changing nothing, when it does not apply.
+rename_to_base() {
+	local branch=$1 base=$2 owner=$3 name=$4 dir=$5 on_origin='' default local_refs
+	RENAMED_WHERE=''
+	git show-ref --verify --quiet "refs/heads/$base" && return 1
+	if [[ -n $name ]]; then
+		[[ -z $(git ls-remote --heads origin "refs/heads/$base") ]] || return 1
+		on_origin=$(git ls-remote --heads origin "refs/heads/$branch") ||
+			die "Unable to query origin/$branch."
+	fi
+	if [[ -n $on_origin ]]; then
+		default=$(gh api "repos/$owner/$name" --jq .default_branch) ||
+			die "Unable to read the default branch of $owner/$name."
+		[[ $default == "$branch" ]] || return 1
+		echo "==> init sets up $base, but $owner/$name names its default branch $branch."
+		echo '    GitHub moves its pull requests and branch protection to the new name and redirects the old one.'
+		confirm "Rename $branch to $base on $owner/$name and here?" ||
+			die "init sets up $base. Rename $branch to $base, or set DEFAULT_BASE_BRANCH=$branch, then run init again."
+		printf '{"new_name": "%s"}\n' "$base" >"$dir/branch-rename.json"
+		gh api "repos/$owner/$name/branches/$branch/rename" --method POST --input "$dir/branch-rename.json" --silent ||
+			die "Unable to rename $branch to $base on $owner/$name. Rename it there, then run init again."
+		RENAMED_WHERE=" here and on $owner/$name"
+	else
+		local_refs=$(git for-each-ref --format='%(refname)' refs/heads/)
+		[[ -z $local_refs || $local_refs == "refs/heads/$branch" ]] || return 1
+	fi
+	# An unborn branch has no ref for git branch -m to move, so HEAD alone is pointed at the new name.
+	if git rev-parse --quiet --verify HEAD >/dev/null; then
+		git branch -m "$branch" "$base"
+	else
+		git symbolic-ref HEAD "refs/heads/$base"
+	fi
+	if [[ -n $on_origin ]]; then
+		[[ -z $(git config --get "branch.$base.merge") ]] || git config "branch.$base.merge" "refs/heads/$base"
+		git fetch --quiet --prune origin || die "Renamed $branch to $base, but unable to fetch origin."
+		! git show-ref --verify --quiet refs/remotes/origin/HEAD || git remote set-head origin "$base" >/dev/null
+	fi
+	echo "OK: Renamed branch $branch to $base${RENAMED_WHERE}."
+}
+
 # Steps 2 to 7 of init with defaults, for --force $1, the owner $2 and the repository name $3 (empty without
 # origin): Git, the GitHub repository, the files, their commit and push, the settings and the rulesets, then
 # one summary line per step. Each outward action asks first, and declining skips that step only.
@@ -961,6 +1005,10 @@ init_from_defaults() {
 	root=$(git rev-parse --show-toplevel)
 	cd -- "$root"
 	branch=$(git symbolic-ref --quiet --short HEAD) || branch=''
+	if [[ -n $branch && $branch != "$base" ]] && rename_to_base "$branch" "$base" "$owner" "$name" "$dir"; then
+		summary[${#summary[@]} - 1]="Git|done, renamed $branch to $base$RENAMED_WHERE"
+		branch=$base
+	fi
 	[[ $branch == "$base" ]] ||
 		die "init sets up $base, but the current branch is ${branch:-a detached HEAD}. Switch to $base, then run init again."
 

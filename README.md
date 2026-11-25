@@ -125,7 +125,15 @@ without a terminal, answers no.
    [Without defaults](#without-defaults), and stops there.
 2. **Git.** Outside a Git working tree, it runs `git init -b main` (the base
    branch) in the current folder. The current branch must be the base branch;
-   otherwise it stops and asks you to switch.
+   otherwise it stops and asks you to switch. One exception: when the base
+   branch exists neither locally nor on `origin`, and the current branch, such
+   as the `master` of a Git without `init.defaultBranch`, is the repository's
+   default under another name, it renames that branch to the base branch.
+   It does that on its own for a branch that is not on GitHub yet and is the
+   only local branch. For a branch that is GitHub's default branch, it asks
+   `Rename master to main on <owner>/<repo> and here? [y/N]`, then renames it
+   on GitHub, which moves its pull requests and branch protection, and here; a
+   no stops the run.
 3. **GitHub repository.** It uses the repository behind `origin`. Without
    `origin`, it asks `Create <owner>/<folder> (public)? [y/N]` and runs
    `gh repo create <owner>/<folder> --public --source . --remote origin`. A no

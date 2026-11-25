@@ -2,3 +2,4 @@
 # only codacy.yaml is source.
 .codacy/*
 !.codacy/codacy.yaml
+github-accounts.json
